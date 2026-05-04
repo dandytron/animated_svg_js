@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SVG Animation Tool — Reuters News Applications</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      color: #1a1a1a;
+      background: #fff;
+    }
+
+    .page {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 48px 24px 64px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 52px;
+      font-weight: 800;
+      line-height: 1.05;
+      color: #1a1a1a;
+    }
+
+    .subtitle {
+      margin: 0 0 36px;
+      font-size: 16px;
+      font-style: italic;
+      color: #e05500;
+    }
+
+    .field-group { margin-bottom: 24px; }
+
+    .field-label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .input-row { display: flex; gap: 8px; }
+
+    #chart-id-input {
+      flex: 1;
+      padding: 9px 12px;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      outline: none;
+    }
+    #chart-id-input:focus { border-color: #888; }
+
+    #load-btn {
+      padding: 9px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid #aaa;
+      border-radius: 3px;
+      background: #fff;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #load-btn:hover:not(:disabled) { background: #f5f5f5; }
+    #load-btn:disabled { opacity: 0.45; cursor: default; }
+
+    .error-msg { margin: 6px 0 0; font-size: 13px; color: #cc0000; }
+
+    .format-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .fmt-btn {
+      padding: 7px 18px;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+      color: #777;
+      cursor: default;
+      user-select: none;
+    }
+    .fmt-btn--disabled { opacity: 0.35; }
+    .fmt-btn--active { border-color: #1a1a1a; color: #1a1a1a; font-weight: 600; }
+
+    /* ── Queue section ─────────────────────────────────────────────────────── */
+
+    #queue-section { margin-top: 36px; }
+
+    #svg-container {
+      margin-bottom: 24px;
+      border: 1px solid #e0e0e0;
+      background: #fafafa;
+    }
+    #svg-container svg { max-width: 100%; height: auto; display: block; }
+    #svg-container .selected {
+      filter: drop-shadow(0 0 4px #f90) drop-shadow(0 0 2px #f90);
+    }
+
+    .warning-msg {
+      margin: 0 0 16px;
+      padding: 8px 12px;
+      background: #fff8e1;
+      border: 1px solid #f0c040;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+
+    .queue-panel { margin-bottom: 24px; }
+
+    .queue-panel h2 {
+      margin: 0 0 12px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.13em;
+      color: #555;
+    }
+
+    .queue-empty { margin: 0; padding: 12px 0; color: #999; font-style: italic; }
+
+    .queue-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 9px 0;
+      border-bottom: 1px solid #ebebeb;
+    }
+
+    .queue-color { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+    .queue-label {
+      flex: 1;
+      min-width: 110px;
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .anim-type {
+      padding: 4px 6px;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+    }
+
+    .timing-label { font-size: 13px; color: #555; white-space: nowrap; }
+
+    .timing-input {
+      width: 58px;
+      padding: 4px 6px;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      margin: 0 2px;
+    }
+
+    .remove-btn {
+      padding: 3px 8px;
+      font-size: 12px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      background: #fff;
+      color: #bbb;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .remove-btn:hover { border-color: #cc0000; color: #cc0000; }
+
+    .overhang-warning { flex-basis: 100%; margin-left: 18px; font-size: 12px; color: #e05500; }
+
+    .extend-btn {
+      margin-left: 6px;
+      padding: 2px 8px;
+      font-size: 12px;
+      border: 1px solid #e05500;
+      border-radius: 3px;
+      background: #fff;
+      color: #e05500;
+      cursor: pointer;
+    }
+    .extend-btn:hover { background: #fff3e0; }
+
+    .queue-footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid #e0e0e0;
+    }
+
+    .total-dur-label { font-size: 13px; color: #555; margin-right: auto; }
+
+    #total-duration {
+      width: 58px;
+      padding: 4px 6px;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      margin: 0 2px;
+    }
+
+    #preview-btn {
+      padding: 7px 18px;
+      font-size: 13px;
+      border: 1px solid #aaa;
+      border-radius: 3px;
+      background: #fff;
+      cursor: pointer;
+    }
+    #preview-btn:hover:not(:disabled) { background: #f5f5f5; }
+    #preview-btn:disabled { opacity: 0.45; cursor: default; }
+
+    .export-wrap { position: relative; }
+
+    #export-btn {
+      padding: 7px 18px;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+      color: #777;
+      cursor: pointer;
+    }
+    #export-btn:hover { background: #f5f5f5; color: #1a1a1a; border-color: #aaa; }
+
+    #export-menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 4px);
+      min-width: 160px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.10);
+      z-index: 100;
+    }
+    #export-menu button {
+      display: block;
+      width: 100%;
+      padding: 9px 14px;
+      text-align: left;
+      font-size: 13px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      color: #1a1a1a;
+    }
+    #export-menu button:hover { background: #f5f5f5; }
+
+    /* ── Status panel ──────────────────────────────────────────────────────── */
+
+    #status-panel {
+      margin-bottom: 24px;
+      border: 1px solid #e0e0e0;
+      border-radius: 3px;
+      background: #fafafa;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .status-msg {
+      padding: 5px 12px;
+      font-size: 12px;
+      font-family: "SF Mono", "Fira Code", Consolas, monospace;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .status-info  { color: #444; }
+    .status-done  { color: #1a6e1a; font-weight: 600; }
+    .status-error { color: #cc0000; font-weight: 600; }
+
+    /* ── Preview ───────────────────────────────────────────────────────────── */
+
+    .preview-bg-controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: #555;
+    }
+    .preview-bg-controls label { cursor: pointer; }
+
+    #preview-container { min-height: 60px; border: 1px solid #e0e0e0; }
+    #preview-container svg { max-width: 100%; height: auto; display: block; }
+
+    .bg-checkerboard {
+      background-color: #fff;
+      background-image:
+        linear-gradient(45deg, #ccc 25%, transparent 25%),
+        linear-gradient(-45deg, #ccc 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #ccc 75%),
+        linear-gradient(-45deg, transparent 75%, #ccc 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+    }
+    .bg-white { background: #fff; }
+    .bg-black  { background: #000; }
+
+    /* ── Footer ────────────────────────────────────────────────────────────── */
+
+    footer { border-top: 1px solid #e0e0e0; font-size: 13px; color: #888; }
+    .footer-inner { max-width: 760px; margin: 0 auto; padding: 14px 24px; }
+    footer a { color: #e05500; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <main>
+    <div class="page">
+      <h1>SVG Animation Tool</h1>
+      <p class="subtitle">Animate a Datawrapper chart and export it for video.</p>
+
+      <div class="field-group">
+        <label class="field-label" for="chart-id-input">Enter a chart identifier or URL</label>
+        <div class="input-row">
+          <input type="text" id="chart-id-input"
+                 placeholder="e.g. ABCD1 or https://app.datawrapper.de/chart/ABCD1/publish">
+          <button id="load-btn">Load →</button>
+        </div>
+        <p id="input-error" class="error-msg" hidden></p>
+      </div>
+
+      <div class="field-group">
+        <p class="field-label">Select a format</p>
+        <div class="format-buttons">
+          <button class="fmt-btn fmt-btn--disabled">1:1</button>
+          <button class="fmt-btn fmt-btn--disabled">4:5</button>
+          <button class="fmt-btn fmt-btn--disabled">9:16</button>
+          <button class="fmt-btn fmt-btn--disabled">Newsletter</button>
+          <button class="fmt-btn fmt-btn--active">Video</button>
+          <button class="fmt-btn fmt-btn--disabled">Download All</button>
+        </div>
+      </div>
+
+      <section id="queue-section" hidden>
+
+        <div id="svg-container"></div>
+        <p id="no-elements-warning" class="warning-msg" hidden>
+          No animatable elements detected in this SVG.
+        </p>
+
+        <div class="queue-panel">
+          <h2>Animation Queue</h2>
+          <div id="queue-items">
+            <p class="queue-empty">Click elements in the SVG above to add them to the queue.</p>
+          </div>
+          <div class="queue-footer">
+            <label class="total-dur-label">
+              Total duration: <input type="number" id="total-duration" value="8" min="1" step="0.5"> s
+            </label>
+            <button id="preview-btn">Preview</button>
+            <div class="export-wrap">
+              <button id="export-btn">Export ▾</button>
+              <div id="export-menu" hidden>
+                <button data-fmt="svg">Animated SVG</button>
+                <button data-fmt="gif">GIF</button>
+                <button data-fmt="mov">ProRes MOV</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="status-panel" hidden></div>
+
+        <div class="preview-section">
+          <div class="preview-bg-controls">
+            <span>Preview background:</span>
+            <label><input type="radio" name="preview-bg" value="checkerboard" checked> Checkerboard</label>
+            <label><input type="radio" name="preview-bg" value="white"> White</label>
+            <label><input type="radio" name="preview-bg" value="black"> Black</label>
+          </div>
+          <div id="preview-container" class="bg-checkerboard"></div>
+        </div>
+
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      Having problems? Contact <a href="mailto:ryan.brooks@tr.com">Ryan Brooks</a>.
+    </div>
+  </footer>
+
+  <!--
+    Load order matters: config → detect → animate → export → app
+    Each file adds functions to the global scope; app.js calls them all.
+  -->
+  <script src="config.js"></script>
+  <script src="detect.js"></script>
+  <script src="animate.js"></script>
+  <script src="export.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

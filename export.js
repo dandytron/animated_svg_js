@@ -1,0 +1,302 @@
+// ── export.js — frame capture and encoding ────────────────────────────────────
+//
+// This file replaces the entire Playwright + ffmpeg pipeline from the Python
+// prototype. Key difference: SMIL is NOT used here. See DESIGN_DOC for why.
+//
+// Instead, we drive animation state by writing SVG attributes directly at each
+// timestamp. XMLSerializer then captures the correct values because they are
+// real DOM attributes, not animation-engine state.
+//
+// ffmpeg.wasm encodes GIF and ProRes MOV entirely in-browser.
+// All ffmpeg files are proxied through our Flask server (/ffmpeg-esm/, /ffmpeg-core/)
+// so every resource is same-origin — no blob URLs, no COEP conflicts.
+
+'use strict';
+
+let _ffmpeg = null;
+
+// ── Clip bounds ───────────────────────────────────────────────────────────────
+
+function _clipBounds(svgEl) {
+  const vb = svgEl.getAttribute('viewBox');
+  if (vb) {
+    const [x, y, w, h] = vb.trim().split(/\s+/).map(Number);
+    return { x, y: y - 60, w, h: h + 60 };
+  }
+  return { x: 0, y: -60, w: 1290, h: 460 };
+}
+
+// ── JS-driven animation state (export only) ───────────────────────────────────
+
+// How far along a given element's animation is at time t (0–1, clamped).
+function _progress(elem, t) {
+  if (t <= elem.start_time) return 0;
+  if (t >= elem.start_time + elem.element_duration) return 1;
+  return (t - elem.start_time) / elem.element_duration;
+}
+
+// Create static clip paths with no <animate> children. We mutate the rect
+// attributes directly each frame so XMLSerializer captures the right values.
+function _setupExportClips(svgEl, config, bounds) {
+  let defs = svgEl.querySelector('defs');
+  if (!defs) {
+    defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    svgEl.insertBefore(defs, svgEl.firstChild);
+  }
+
+  config.elements.forEach((elem, i) => {
+    const group = svgEl.querySelector(`[id="${_esc(elem.group_id)}"]`);
+    if (!group) return;
+
+    if (elem.animation_type === 'draw_on' || elem.animation_type === 'grow_from_baseline') {
+      const clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+      clip.setAttribute('id', `ecl-${i}`);
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      if (elem.animation_type === 'draw_on') {
+        rect.setAttribute('x',      bounds.x);
+        rect.setAttribute('y',      bounds.y);
+        rect.setAttribute('width',  '0');
+        rect.setAttribute('height', bounds.h);
+      } else {
+        rect.setAttribute('x',      bounds.x);
+        rect.setAttribute('y',      bounds.y + bounds.h);
+        rect.setAttribute('width',  bounds.w);
+        rect.setAttribute('height', '0');
+      }
+      clip.appendChild(rect);
+      defs.appendChild(clip);
+      group.setAttribute('clip-path', `url(#ecl-${i})`);
+    }
+
+    if (elem.animation_type === 'fade_in' || elem.animation_type === 'pop_in') {
+      group.setAttribute('opacity', '0');
+    }
+  });
+}
+
+// Apply the correct visual state for timestamp t by writing attributes directly.
+function _applyAtTime(svgEl, config, bounds, t) {
+  config.elements.forEach((elem, i) => {
+    const group = svgEl.querySelector(`[id="${_esc(elem.group_id)}"]`);
+    if (!group) return;
+    const p = _progress(elem, t);
+
+    switch (elem.animation_type) {
+      case 'draw_on': {
+        const rect = svgEl.querySelector(`#ecl-${i} rect`);
+        if (rect) rect.setAttribute('width', p * bounds.w);
+        break;
+      }
+      case 'fade_in':
+        group.setAttribute('opacity', p);
+        break;
+      case 'pop_in':
+        group.setAttribute('opacity', t >= elem.start_time ? 1 : 0);
+        break;
+      case 'grow_from_baseline': {
+        const rect = svgEl.querySelector(`#ecl-${i} rect`);
+        if (rect) {
+          const h = p * bounds.h;
+          rect.setAttribute('height', h);
+          rect.setAttribute('y', bounds.y + bounds.h - h);
+        }
+        break;
+      }
+    }
+  });
+}
+
+// ── SVG → canvas ──────────────────────────────────────────────────────────────
+
+// Serialise the current DOM state of svgEl and draw it to a new canvas.
+// Works because we set real DOM attributes (not SMIL state), so XMLSerializer
+// captures the exact values we wrote.
+function _svgToCanvas(svgEl, w, h) {
+  const svgStr = new XMLSerializer().serializeToString(svgEl);
+  const blob   = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url    = URL.createObjectURL(blob);
+
+  return new Promise((resolve, reject) => {
+    const img = new Image(w, h);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width  = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { alpha: true });
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(canvas);
+    };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
+}
+
+// ── Frame capture ─────────────────────────────────────────────────────────────
+
+async function captureFrames(svgString, config, totalDuration, onProgress) {
+  const fps         = 30;
+  const totalFrames = Math.ceil(totalDuration * fps);
+
+  const parser = new DOMParser();
+  const svgEl  = parser.parseFromString(svgString, 'image/svg+xml').documentElement;
+
+  const vb = (svgEl.getAttribute('viewBox') || '0 0 1290 400').trim().split(/\s+/).map(Number);
+  const [, , vw, vh] = vb;
+
+  // SVG content (axis labels, legend) often extends slightly below the viewBox.
+  // Take the larger of viewBox height and explicit height attribute, plus a buffer.
+  const attrH = parseFloat(svgEl.getAttribute('height'));
+  const canvasH = (Number.isFinite(attrH) && attrH > vh ? attrH : vh) + 40;
+  const canvasW = vw;
+
+  const bounds = _clipBounds(svgEl);
+
+  _setupExportClips(svgEl, config, bounds);
+
+  // The SVG must be in the live DOM for fonts and styles to resolve correctly.
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;overflow:hidden;pointer-events:none';
+  host.innerHTML = new XMLSerializer().serializeToString(svgEl);
+  document.body.appendChild(host);
+  const live = host.querySelector('svg');
+  live.setAttribute('width',  canvasW);
+  live.setAttribute('height', canvasH);
+  live.style.overflow = 'visible';
+
+  const frames = [];
+  try {
+    for (let i = 0; i < totalFrames; i++) {
+      _applyAtTime(live, config, bounds, i / fps);
+      const canvas = await _svgToCanvas(live, canvasW, canvasH);
+      frames.push(await new Promise(res => canvas.toBlob(res, 'image/png')));
+      if (onProgress) onProgress(i + 1, totalFrames);
+    }
+  } finally {
+    document.body.removeChild(host);
+  }
+
+  return { frames, width: canvasW, height: canvasH, fps };
+}
+
+// ── ffmpeg.wasm ───────────────────────────────────────────────────────────────
+
+async function _loadFfmpeg(onStatus) {
+  if (_ffmpeg) return _ffmpeg;
+  onStatus('Loading ffmpeg…');
+
+  // All files served from our own origin via proxy routes — no blob URLs needed.
+  // This avoids two problems: (1) COEP blocking cross-origin Worker construction,
+  // (2) ESM relative imports inside worker.js and ffmpeg-core.js failing from blob context.
+  const base           = window.location.origin;
+  const classWorkerURL = `${base}/ffmpeg-esm/worker.js`;
+  const coreURL        = `${base}/ffmpeg-core/ffmpeg-core.js`;
+  const wasmURL        = `${base}/ffmpeg-core/ffmpeg-core.wasm`;
+
+  const { FFmpeg } = await import(`${base}/ffmpeg-esm/index.js`);
+
+  onStatus('Initialising ffmpeg…');
+  const ff = new FFmpeg();
+  ff.on('log',      ({ message })  => onStatus(`[ffmpeg] ${message}`));
+  ff.on('progress', ({ progress }) => onStatus(`[ffmpeg] progress ${Math.round(progress * 100)}%`));
+
+  const loadResult = await ff.load({ classWorkerURL, coreURL, wasmURL });
+  if (!loadResult) throw new Error('ff.load() returned false — core failed to initialise');
+
+  _ffmpeg = ff;
+  onStatus('ffmpeg ready.');
+  return ff;
+}
+
+async function _writeFrames(ff, frames, onStatus) {
+  onStatus(`Writing ${frames.length} frames…`);
+  for (let i = 0; i < frames.length; i++) {
+    const buf = new Uint8Array(await frames[i].arrayBuffer());
+    await ff.writeFile(`frame_${String(i).padStart(4, '0')}.png`, buf);
+  }
+}
+
+async function _cleanFrames(ff, count) {
+  for (let i = 0; i < count; i++) {
+    await ff.deleteFile(`frame_${String(i).padStart(4, '0')}.png`).catch(() => {});
+  }
+}
+
+// ── Public export functions ───────────────────────────────────────────────────
+
+// SVG export: build a SMIL-animated SVG (for download, not for canvas).
+// Uses animate.js because the output is played in a browser, not serialised.
+async function exportSvg(svgString, config) {
+  const svgEl    = new DOMParser().parseFromString(svgString, 'image/svg+xml').documentElement;
+  const animated = buildAnimatedSvg(svgEl, config); // from animate.js
+  const out      = new XMLSerializer().serializeToString(animated);
+  _download(new Blob([out], { type: 'image/svg+xml' }), 'animated.svg');
+}
+
+async function exportGif(svgString, config, totalDuration, onStatus) {
+  onStatus('Capturing frames…');
+  const { frames, width, height, fps } = await captureFrames(
+    svgString, config, totalDuration,
+    (i, n) => onStatus(`Capturing frame ${i} of ${n}…`),
+  );
+
+  const ff = await _loadFfmpeg(onStatus);
+  await _writeFrames(ff, frames, onStatus);
+
+  onStatus('Encoding GIF…');
+  await ff.exec([
+    '-framerate', String(fps),
+    '-i',         'frame_%04d.png',
+    '-vf',        `fps=${fps},scale=${width}:-1:flags=lanczos`,
+    'out.gif',
+  ]);
+
+  const data = await ff.readFile('out.gif');
+  await _cleanFrames(ff, frames.length);
+  await ff.deleteFile('out.gif').catch(() => {});
+
+  _download(new Blob([data.buffer], { type: 'image/gif' }), 'animated.gif');
+  onStatus('Done.');
+}
+
+async function exportMov(svgString, config, totalDuration, onStatus) {
+  onStatus('Capturing frames…');
+  const { frames, width, height, fps } = await captureFrames(
+    svgString, config, totalDuration,
+    (i, n) => onStatus(`Capturing frame ${i} of ${n}…`),
+  );
+
+  const ff = await _loadFfmpeg(onStatus);
+  await _writeFrames(ff, frames, onStatus);
+
+  // ProRes 4444 with alpha — same command as the Python prototype's ffmpeg call.
+  onStatus('Encoding ProRes 4444…');
+  await ff.exec([
+    '-framerate',  String(fps),
+    '-i',          'frame_%04d.png',
+    '-vcodec',     'prores_ks',
+    '-pix_fmt',    'yuva444p10le',
+    '-alpha_bits', '16',
+    '-profile:v',  '4444',
+    'out.mov',
+  ]);
+
+  const data = await ff.readFile('out.mov');
+  await _cleanFrames(ff, frames.length);
+  await ff.deleteFile('out.mov').catch(() => {});
+
+  _download(new Blob([data.buffer], { type: 'video/quicktime' }), 'animated.mov');
+  onStatus('Done. Download started.');
+}
+
+function _download(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a   = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function _esc(id) {
+  return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
