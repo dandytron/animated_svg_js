@@ -135,7 +135,7 @@ function _svgToCanvas(svgEl, w, h) {
 
 // ── Frame capture ─────────────────────────────────────────────────────────────
 
-async function captureFrames(svgString, config, totalDuration, onProgress) {
+async function captureFrames(svgString, config, totalDuration, onProgress, { transparent = false } = {}) {
   const fps         = 30;
   const totalFrames = Math.ceil(totalDuration * fps);
 
@@ -164,6 +164,14 @@ async function captureFrames(svgString, config, totalDuration, onProgress) {
   live.setAttribute('width',  canvasW);
   live.setAttribute('height', canvasH);
   live.style.overflow = 'visible';
+
+  // For transparent export (MOV), hide the Datawrapper background rect.
+  // Without this, the opaque white rect is baked into every frame and the
+  // alpha channel in the ProRes output has no effect.
+  if (transparent) {
+    const bg = live.querySelector('rect');
+    if (bg) bg.style.opacity = '0';
+  }
 
   const frames = [];
   try {
@@ -265,6 +273,7 @@ async function exportMov(svgString, config, totalDuration, onStatus) {
   const { frames, width, height, fps } = await captureFrames(
     svgString, config, totalDuration,
     (i, n) => onStatus(`Capturing frame ${i} of ${n}…`),
+    { transparent: true },
   );
 
   const ff = await _loadFfmpeg(onStatus);
