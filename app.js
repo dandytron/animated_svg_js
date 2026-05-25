@@ -198,6 +198,16 @@ const _HIDE_SKIP = new Set([
   ...CONFIG.chartRoots.map(r => r.rootId),
 ]);
 
+// Datawrapper compound IDs starting with 'container-svg': the second segment
+// determines whether the element is structural (skip) or meaningful (allow).
+// container-body/bodyTop/bodyCenter are layout scaffolding; header/footer/footerLeft/Right
+// are visible content that the user may want to hide.
+const _CONTAINER_STRUCTURAL = new Set([
+  'container-body-svg',
+  'container-bodyTop-svg',
+  'container-bodyCenter-svg',
+]);
+
 // Walk up from a clicked element to find the nearest ID'd ancestor that is a
 // meaningful hide target. Series groups call stopPropagation so they never
 // reach this; structural Datawrapper wrappers are filtered by _HIDE_SKIP.
@@ -215,12 +225,16 @@ function _findHideTarget(el, svgRoot) {
 }
 
 function _isHideableId(id) {
-  const firstSegment = id.split(' ')[0];
+  const segments = id.split(' ');
+  const firstSegment = segments[0];
   if (_HIDE_SKIP.has(firstSegment)) return false;
-  // Datawrapper's top-level layout containers have 'container-svg' as their
-  // first ID segment. Their children (header, footer) have it as second segment
-  // and are meaningful hide targets — allow those through.
-  if (firstSegment === 'container-svg') return false;
+  if (firstSegment === 'container-svg') {
+    // Bare 'container-svg' (no second segment) is the layout root — skip.
+    // For compound container IDs, skip structural body wrappers but allow
+    // header and footer groups (those contain visible, hideable content).
+    const second = segments[1];
+    return second !== undefined && !_CONTAINER_STRUCTURAL.has(second);
+  }
   if (state.elements.some(e => e.group_id === id)) return false;
   return true;
 }
