@@ -155,7 +155,7 @@ function injectSvg() {
   for (const el of state.elements) {
     // Scope to selectable roots: duplicate IDs in value-label groups must not get stopPropagation.
     let dom = null;
-    for (const rootId of CONFIG.selectableRoots) {
+    for (const rootId of CONFIG.chartRoots.map(r => r.rootId)) {
       const root = _findById(container, rootId);
       if (root) {
         dom = root.getAttribute('id') === el.group_id ? root : _findById(root, el.group_id);
@@ -186,15 +186,16 @@ function _findById(root, id) {
 // ── Element hiding ────────────────────────────────────────────────────────────
 
 // Datawrapper structural wrapper IDs — too broad to be useful hide targets.
-// Series group IDs are also excluded (handled by the animation queue instead).
+// Chart root IDs are added automatically from CONFIG.chartRoots (their children
+// handle their own clicks via stopPropagation, so the container should be skipped).
 const _HIDE_SKIP = new Set([
-  'exportSvg',         // SVG root
-  '__svelte-dw-svg',   // Datawrapper's top-level Svelte wrapper — contains almost everything
-  'lines-svg',         // series container — children handle their own clicks via stopPropagation
-  'chart-svg',         // main chart container
-  'group-svg',         // inner positioning group
-  'svg-main-svg',      // chart drawing container
-  'tooltip-layer-svg', // invisible interaction overlay
+  'exportSvg',
+  '__svelte-dw-svg',
+  'chart-svg',
+  'group-svg',
+  'svg-main-svg',
+  'tooltip-layer-svg',
+  ...CONFIG.chartRoots.map(r => r.rootId),
 ]);
 
 // Walk up from a clicked element to find the nearest ID'd ancestor that is a
@@ -228,16 +229,20 @@ function toggleHidden(id) {
   const container = document.getElementById('svg-container');
   const escaped = id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const all = [...container.querySelectorAll(`[id="${escaped}"]`)];
-  // Prefer elements outside series containers (bare path IDs share names with label texts).
-  const dom = all.find(el => !CONFIG.selectableRoots.some(r => {
+  const outsideRoots = all.filter(el => !CONFIG.chartRoots.map(r => r.rootId).some(r => {
     const root = _findById(container, r); return root && root.contains(el);
-  })) ?? all[0] ?? null;
+  }));
+  // Prefer <text> elements — connect-line <path>s share the same bare ID and appear
+  // earlier in the DOM, so without this filter they'd be dimmed instead of the labels.
+  // Dim ALL matching texts so name + value percentage hide together.
+  const texts = outsideRoots.filter(el => el.tagName.toLowerCase() === 'text');
+  const doms  = texts.length > 0 ? texts : outsideRoots.slice(0, 1);
   if (state.hidden.has(id)) {
     state.hidden.delete(id);
-    if (dom) dom.style.opacity = '';
+    doms.forEach(el => { el.style.opacity = ''; });
   } else {
     state.hidden.add(id);
-    if (dom) dom.style.opacity = '0.15';
+    doms.forEach(el => { el.style.opacity = '0.15'; });
   }
   renderHiddenList();
 }

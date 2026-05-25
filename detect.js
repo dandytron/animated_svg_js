@@ -59,23 +59,23 @@ function detectElements(svgEl) {
   const elements = [];
   const seen     = new Set();
 
-  for (const rootId of CONFIG.selectableRoots) {
+  for (const entry of CONFIG.chartRoots) {
+    const { rootId, select, childTag, defaultAnimation } = entry;
     const root = svgEl.querySelector(`[id="${_esc(rootId)}"]`);
     if (!root) continue;
 
-    if (rootId === 'area-fills-svg') {
-      // The root group itself is the single animatable element for area fills
+    if (select === 'root') {
       if (!seen.has(rootId)) {
         seen.add(rootId);
-        elements.push(_makeElement(rootId, root));
+        elements.push(_makeElement(rootId, root, defaultAnimation));
       }
     } else {
-      // Each direct child <g> of lines-svg is one series
       for (const child of root.children) {
+        if (childTag && child.tagName.toLowerCase() !== childTag) continue;
         const id = child.getAttribute('id');
         if (id && !seen.has(id)) {
           seen.add(id);
-          elements.push(_makeElement(id, child));
+          elements.push(_makeElement(id, child, defaultAnimation));
         }
       }
     }
@@ -84,11 +84,11 @@ function detectElements(svgEl) {
   return elements;
 }
 
-function _makeElement(id, domEl) {
+function _makeElement(id, domEl, defaultAnimation) {
   return {
     group_id:       id,
     label:          _labelFromId(id),
-    animation_type: detectAnimationType(domEl),
+    animation_type: defaultAnimation ?? detectAnimationType(domEl),
     color:          _extractColor(domEl),
   };
 }
@@ -103,9 +103,11 @@ function _labelFromId(id) {
     .trim();
 }
 
-// Pull the first non-white stroke or fill colour out of child paths.
+// Pull the first non-white stroke or fill colour out of the element or its children.
+// Checks the element itself first so bare <path> elements (e.g. areas-svg children)
+// are handled without needing child traversal.
 function _extractColor(group) {
-  for (const el of group.querySelectorAll('path, line, circle, polyline')) {
+  for (const el of [group, ...group.querySelectorAll('path, line, circle, polyline')]) {
     const style = el.getAttribute('style') || '';
     const stroke = style.match(/stroke:\s*(rgb\([^)]+\)|#[0-9a-fA-F]{3,6})/);
     if (stroke && !_isWhite(stroke[1])) return stroke[1];
