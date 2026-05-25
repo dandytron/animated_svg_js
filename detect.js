@@ -34,9 +34,9 @@ function _hasStrokeOnlyPath(group) {
 // ── Generic Layer ─────────────────────────────────────────────────────────────
 
 function _detectGeneric(group) {
+  const tx = group.getAttribute('transform') || '';
   for (const path of group.querySelectorAll('path')) {
-    const d   = path.getAttribute('d') || '';
-    const tx  = group.getAttribute('transform') || '';
+    const d = path.getAttribute('d') || '';
 
     // Signal 3a: arc commands + scale transform = dot/circle marker → Pop In
     if (/[Aa]/.test(d) && tx.includes('scale')) return 'pop_in';

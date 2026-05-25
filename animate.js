@@ -41,6 +41,14 @@ function _clipBounds(svgEl) {
     const [x, y, w, h] = vb.trim().split(/\s+/).map(Number);
     return { x, y: y - 60, w, h: h + 60 };
   }
+  // Datawrapper SVGs have no viewBox — coordinate space equals pixel space,
+  // so width/height attributes give the correct clip dimensions.
+  const w = parseFloat(svgEl.getAttribute('width'));
+  const h = parseFloat(svgEl.getAttribute('height'));
+  if (Number.isFinite(w) && Number.isFinite(h)) {
+    return { x: 0, y: -60, w, h: h + 60 };
+  }
+  console.warn('animate.js: SVG has no viewBox and no width/height — using hardcoded clip bounds. Animation will likely be clipped incorrectly.');
   return { x: 0, y: -60, w: 1290, h: 460 };
 }
 
@@ -122,7 +130,10 @@ function buildAnimatedSvg(svgEl, config) {
 
   config.elements.forEach((elem, i) => {
     const group = clone.querySelector(`[id="${_esc(elem.group_id)}"]`);
-    if (!group) return;
+    if (!group) {
+      console.warn(`animate.js: group '${elem.group_id}' not found in SVG — element skipped`);
+      return;
+    }
 
     const clipId = `clip-${i}`;
     const begin  = `${elem.start_time}s`;

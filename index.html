@@ -70,6 +70,18 @@
     #load-btn:hover:not(:disabled) { background: #f5f5f5; }
     #load-btn:disabled { opacity: 0.45; cursor: default; }
 
+    #test-btn {
+      padding: 9px 14px;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+      color: #999;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #test-btn:hover { background: #f5f5f5; color: #555; }
+
     .error-msg { margin: 6px 0 0; font-size: 13px; color: #cc0000; }
 
     .format-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -95,8 +107,9 @@
       margin-bottom: 24px;
       border: 1px solid #e0e0e0;
       background: #fafafa;
+      overflow: visible;
     }
-    #svg-container svg { max-width: 100%; height: auto; display: block; }
+    #svg-container svg { max-width: 100%; height: auto; display: block; overflow: visible; cursor: crosshair; }
     #svg-container .selected {
       filter: drop-shadow(0 0 4px #f90) drop-shadow(0 0 2px #f90);
     }
@@ -109,6 +122,39 @@
       border-radius: 3px;
       font-size: 13px;
     }
+
+    #hidden-panel { margin-bottom: 16px; }
+
+    #hidden-panel h2 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.13em;
+      color: #555;
+    }
+
+    .hidden-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid #ebebeb;
+      font-size: 13px;
+    }
+
+    .hidden-label { flex: 1; color: #999; font-style: italic; }
+
+    .restore-btn {
+      padding: 2px 8px;
+      font-size: 12px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+      color: #555;
+      cursor: pointer;
+    }
+    .restore-btn:hover { border-color: #888; color: #1a1a1a; }
 
     .queue-panel { margin-bottom: 24px; }
 
@@ -328,6 +374,7 @@
           <input type="text" id="chart-id-input"
                  placeholder="e.g. ABCD1 or https://app.datawrapper.de/chart/ABCD1/publish">
           <button id="load-btn">Load →</button>
+          <button id="test-btn">Test</button>
         </div>
         <p id="input-error" class="error-msg" hidden></p>
       </div>
@@ -350,6 +397,11 @@
         <p id="no-elements-warning" class="warning-msg" hidden>
           No animatable elements detected in this SVG.
         </p>
+
+        <div id="hidden-panel" hidden>
+          <h2>Hidden elements</h2>
+          <div id="hidden-items"></div>
+        </div>
 
         <div class="queue-panel">
           <h2>Animation Queue</h2>

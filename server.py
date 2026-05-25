@@ -68,6 +68,14 @@ def ffmpeg_core_proxy(filename):
         f'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/{filename}', filename)
 
 
+@app.route('/test-svg')
+def test_svg_route():
+    p = Path(__file__).parent / 'examples' / 'multi_line_graph.svg'
+    if not p.exists():
+        return jsonify(error='examples/multi_line_graph.svg not found'), 404
+    return jsonify(svg=p.read_text())
+
+
 @app.route('/fetch-svg', methods=['POST'])
 def fetch_svg_route():
     data     = request.get_json(silent=True) or {}

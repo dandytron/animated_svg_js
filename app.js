@@ -12,6 +12,7 @@ const state = {
   svg:      null,  // raw SVG string from /fetch-svg
   elements: [],    // detected AnimatableElements (client-side)
   queue:    [],    // {group_id, label, animation_type, start_time, element_duration, color}
+  hidden:   new Set(), // IDs of elements removed from preview and export
 };
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') loadSvg();
   });
   document.getElementById('load-btn').addEventListener('click', loadSvg);
+  document.getElementById('test-btn').addEventListener('click', loadTestSvg);
   document.getElementById('total-duration').addEventListener('input', validateOverhangs);
   document.getElementById('preview-btn').addEventListener('click', preview);
   document.getElementById('export-btn').addEventListener('click', toggleExportMenu);
@@ -49,6 +51,33 @@ function extractChartId(raw) {
 }
 
 // ── Load SVG ──────────────────────────────────────────────────────────────────
+
+async function loadTestSvg() {
+  const btn = document.getElementById('test-btn');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const resp = await fetch('/test-svg');
+    if (!resp.ok) {
+      showInputError('test.svg not found on server — check server logs.');
+      return;
+    }
+    const { svg } = await resp.json();
+    document.getElementById('chart-id-input').value = CONFIG.testChartId;
+    clearInputError();
+    state.svg      = svg;
+    const svgEl    = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+    state.elements = detectElements(svgEl);
+    state.queue    = [];
+    state.hidden   = new Set();
+    injectSvg();
+    renderQueue();
+    document.getElementById('queue-section').hidden = false;
+  } catch {
+    showInputError("Couldn't load test SVG.");
+  } finally {
+    btn.disabled = false; btn.textContent = 'Test';
+  }
+}
 
 async function loadSvg() {
   const chartId = extractChartId(document.getElementById('chart-id-input').value);
@@ -80,6 +109,7 @@ async function loadSvg() {
     const svgEl  = parser.parseFromString(svg, 'image/svg+xml').documentElement;
     state.elements = detectElements(svgEl);  // detect.js
     state.queue    = [];
+    state.hidden   = new Set();
 
     injectSvg();
     renderQueue();
@@ -105,20 +135,143 @@ function injectSvg() {
   const container = document.getElementById('svg-container');
   container.innerHTML = state.svg;
   const svgEl = container.querySelector('svg');
-  if (svgEl) { svgEl.style.maxWidth = '100%'; svgEl.style.height = 'auto'; svgEl.style.display = 'block'; }
+  if (!svgEl) console.warn('app.js: injectSvg — no <svg> element found after injection');
+
+  if (svgEl) {
+    // Datawrapper SVGs have no viewBox. Without it, height:auto can't derive
+    // the aspect ratio when max-width:100% scales the SVG down — height collapses.
+    // Stamp one from the width/height attributes for display only.
+    if (!svgEl.getAttribute('viewBox')) {
+      const w = svgEl.getAttribute('width');
+      const h = svgEl.getAttribute('height');
+      if (w && h) svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    }
+    // Allow content that extends slightly past the declared SVG bounds to show.
+    svgEl.style.overflow = 'visible';
+  };
 
   document.getElementById('no-elements-warning').hidden = state.elements.length > 0;
 
   for (const el of state.elements) {
-    const dom = _findById(container, el.group_id);
+    // Scope to selectable roots: duplicate IDs in value-label groups must not get stopPropagation.
+    let dom = null;
+    for (const rootId of CONFIG.selectableRoots) {
+      const root = _findById(container, rootId);
+      if (root) {
+        dom = root.getAttribute('id') === el.group_id ? root : _findById(root, el.group_id);
+        if (dom) break;
+      }
+    }
     if (!dom) continue;
     dom.style.cursor = 'pointer';
     dom.addEventListener('click', e => { e.stopPropagation(); toggleElement(el.group_id); });
   }
+
+  // Clicking anything else in the SVG hides/restores that element group.
+  // Series group clicks call stopPropagation so they never reach this handler.
+  if (svgEl) {
+    svgEl.addEventListener('click', e => {
+      const target = _findHideTarget(e.target, svgEl);
+      if (target) toggleHidden(target.getAttribute('id'));
+    });
+  }
+
+  renderHiddenList();
 }
 
 function _findById(root, id) {
   return root.querySelector(`[id="${id.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`);
+}
+
+// ── Element hiding ────────────────────────────────────────────────────────────
+
+// Datawrapper structural wrapper IDs — too broad to be useful hide targets.
+// Series group IDs are also excluded (handled by the animation queue instead).
+const _HIDE_SKIP = new Set([
+  'exportSvg',         // SVG root
+  '__svelte-dw-svg',   // Datawrapper's top-level Svelte wrapper — contains almost everything
+  'lines-svg',         // series container — children handle their own clicks via stopPropagation
+  'chart-svg',         // main chart container
+  'group-svg',         // inner positioning group
+  'svg-main-svg',      // chart drawing container
+  'tooltip-layer-svg', // invisible interaction overlay
+]);
+
+// Walk up from a clicked element to find the nearest ID'd ancestor that is a
+// meaningful hide target. Series groups call stopPropagation so they never
+// reach this; structural Datawrapper wrappers are filtered by _HIDE_SKIP.
+//
+// STUB: fine-grained hide (individual <text> nodes within a group) would require
+// targeting elements without IDs. For now, granularity is whole-group only.
+function _findHideTarget(el, svgRoot) {
+  let node = el;
+  while (node && node !== svgRoot) {
+    const id = node.getAttribute && node.getAttribute('id');
+    if (id && _isHideableId(id)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function _isHideableId(id) {
+  const firstSegment = id.split(' ')[0];
+  if (_HIDE_SKIP.has(firstSegment)) return false;
+  // Datawrapper's top-level layout containers have 'container-svg' as their
+  // first ID segment. Their children (header, footer) have it as second segment
+  // and are meaningful hide targets — allow those through.
+  if (firstSegment === 'container-svg') return false;
+  if (state.elements.some(e => e.group_id === id)) return false;
+  return true;
+}
+
+function toggleHidden(id) {
+  const container = document.getElementById('svg-container');
+  const escaped = id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const all = [...container.querySelectorAll(`[id="${escaped}"]`)];
+  // Prefer elements outside series containers (bare path IDs share names with label texts).
+  const dom = all.find(el => !CONFIG.selectableRoots.some(r => {
+    const root = _findById(container, r); return root && root.contains(el);
+  })) ?? all[0] ?? null;
+  if (state.hidden.has(id)) {
+    state.hidden.delete(id);
+    if (dom) dom.style.opacity = '';
+  } else {
+    state.hidden.add(id);
+    if (dom) dom.style.opacity = '0.15';
+  }
+  renderHiddenList();
+}
+
+function renderHiddenList() {
+  const panel = document.getElementById('hidden-panel');
+  if (state.hidden.size === 0) { panel.hidden = true; return; }
+  panel.hidden = false;
+  document.getElementById('hidden-items').innerHTML = [...state.hidden].map(id => `
+    <div class="hidden-row">
+      <span class="hidden-label">${_esc(_labelFromHideId(id))}</span>
+      <button class="restore-btn" data-id="${_esc(id)}">Restore</button>
+    </div>
+  `).join('');
+  document.querySelectorAll('.restore-btn').forEach(btn =>
+    btn.addEventListener('click', () => toggleHidden(btn.dataset.id)));
+}
+
+// Produce a readable label from a Datawrapper compound ID like
+// "container-svg container-header-svg datawrapper-eIILe-abc123-svg".
+// Takes the most specific segment (skipping pure structural markers and hashes).
+function _labelFromHideId(id) {
+  const meaningful = id.split(' ').find(s =>
+    s !== 'container-svg' &&
+    !s.startsWith('datawrapper-') &&
+    !s.startsWith('svelte-') &&
+    !s.startsWith('grid-')
+  ) || id.split(' ')[0];
+  return meaningful
+    .replace(/^container-/, '')
+    .replace(/-svg$/, '')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+    .trim();
 }
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
@@ -228,6 +381,7 @@ function buildConfig() {
       start_time:       item.start_time,
       element_duration: item.element_duration,
     })),
+    hidden_ids: [...state.hidden],
   };
 }
 
@@ -239,9 +393,14 @@ async function preview() {
   btn.disabled = true; btn.textContent = 'Previewing…';
 
   try {
-    const parser   = new DOMParser();
-    const svgEl    = parser.parseFromString(state.svg, 'image/svg+xml').documentElement;
-    const animated = buildAnimatedSvg(svgEl, buildConfig()); // animate.js
+    const config = buildConfig();
+    const parser = new DOMParser();
+    const svgEl  = parser.parseFromString(state.svg, 'image/svg+xml').documentElement;
+    config.hidden_ids.forEach(id => {
+      const el = _findById(svgEl, id);
+      if (el) el.remove();
+    });
+    const animated = buildAnimatedSvg(svgEl, config); // animate.js
 
     const pc = document.getElementById('preview-container');
     pc.innerHTML = '';

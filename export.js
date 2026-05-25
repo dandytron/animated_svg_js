@@ -15,18 +15,8 @@
 
 let _ffmpeg = null;
 
-// ── Clip bounds ───────────────────────────────────────────────────────────────
-
-function _clipBounds(svgEl) {
-  const vb = svgEl.getAttribute('viewBox');
-  if (vb) {
-    const [x, y, w, h] = vb.trim().split(/\s+/).map(Number);
-    return { x, y: y - 60, w, h: h + 60 };
-  }
-  return { x: 0, y: -60, w: 1290, h: 460 };
-}
-
 // ── JS-driven animation state (export only) ───────────────────────────────────
+// _clipBounds is defined in animate.js (loaded first) and shared via global scope.
 
 // How far along a given element's animation is at time t (0–1, clamped).
 function _progress(elem, t) {
@@ -46,7 +36,10 @@ function _setupExportClips(svgEl, config, bounds) {
 
   config.elements.forEach((elem, i) => {
     const group = svgEl.querySelector(`[id="${_esc(elem.group_id)}"]`);
-    if (!group) return;
+    if (!group) {
+      console.warn(`export.js: group '${elem.group_id}' not found in SVG — export clip skipped`);
+      return;
+    }
 
     if (elem.animation_type === 'draw_on' || elem.animation_type === 'grow_from_baseline') {
       const clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
@@ -78,7 +71,10 @@ function _setupExportClips(svgEl, config, bounds) {
 function _applyAtTime(svgEl, config, bounds, t) {
   config.elements.forEach((elem, i) => {
     const group = svgEl.querySelector(`[id="${_esc(elem.group_id)}"]`);
-    if (!group) return;
+    if (!group) {
+      console.warn(`export.js: group '${elem.group_id}' not found at t=${t} — frame may be incomplete`);
+      return;
+    }
     const p = _progress(elem, t);
 
     switch (elem.animation_type) {
@@ -133,6 +129,50 @@ function _svgToCanvas(svgEl, w, h) {
   });
 }
 
+// ── Background rect detection ─────────────────────────────────────────────────
+
+// Find the SVG's opaque background rect — the full-viewBox-spanning white rect
+// that Datawrapper places behind the chart content. Used by transparent export
+// to hide it so the alpha channel survives into the ProRes output.
+//
+// Searches only direct children of the SVG root and one level into non-<defs>
+// groups. Never descends into <defs> — clip path rects live there and must not
+// be hidden.
+//
+// Returns the matching Element, or null if none is found.
+function _findBackgroundRect(svgEl) {
+  // Determine reference dimensions. Real Datawrapper SVGs have no viewBox —
+  // they use width/height attributes instead. Fall back to those.
+  let vx = 0, vy = 0, vw, vh;
+  const vbStr = svgEl.getAttribute('viewBox');
+  if (vbStr) {
+    const vb = vbStr.trim().split(/\s+/).map(Number);
+    if (vb.length < 4 || vb.some(isNaN)) return null;
+    [vx, vy, vw, vh] = vb;
+  } else {
+    vw = parseFloat(svgEl.getAttribute('width'));
+    vh = parseFloat(svgEl.getAttribute('height'));
+    if (!Number.isFinite(vw) || !Number.isFinite(vh)) return null;
+  }
+
+  const isBackground = r => {
+    const w = parseFloat(r.getAttribute('width'));
+    const h = parseFloat(r.getAttribute('height'));
+    const x = parseFloat(r.getAttribute('x') || '0');
+    const y = parseFloat(r.getAttribute('y') || '0');
+    return Math.abs(w - vw) < 2 && Math.abs(h - vh) < 2 && x <= vx + 1 && y <= vy + 1;
+  };
+
+  for (const child of svgEl.children) {
+    if (child.tagName.toLowerCase() === 'defs') continue;
+    if (child.tagName.toLowerCase() === 'rect' && isBackground(child)) return child;
+    for (const grandchild of child.children) {
+      if (grandchild.tagName.toLowerCase() === 'rect' && isBackground(grandchild)) return grandchild;
+    }
+  }
+  return null;
+}
+
 // ── Frame capture ─────────────────────────────────────────────────────────────
 
 async function captureFrames(svgString, config, totalDuration, onProgress, { transparent = false } = {}) {
@@ -142,16 +182,24 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
   const parser = new DOMParser();
   const svgEl  = parser.parseFromString(svgString, 'image/svg+xml').documentElement;
 
-  const vb = (svgEl.getAttribute('viewBox') || '0 0 1290 400').trim().split(/\s+/).map(Number);
-  const [, , vw, vh] = vb;
+  // Datawrapper SVGs have no viewBox — read width/height attributes directly.
+  // For SVGs with a viewBox, the viewBox dimensions define the coordinate space.
+  const vbStr = svgEl.getAttribute('viewBox');
+  const vw = vbStr ? parseFloat(vbStr.trim().split(/\s+/)[2]) : parseFloat(svgEl.getAttribute('width'));
+  const vh = vbStr ? parseFloat(vbStr.trim().split(/\s+/)[3]) : parseFloat(svgEl.getAttribute('height'));
 
-  // SVG content (axis labels, legend) often extends slightly below the viewBox.
-  // Take the larger of viewBox height and explicit height attribute, plus a buffer.
+  // SVG content (footer notes, captions) often extends below the declared height.
+  // Take the larger of declared height and explicit height attribute, plus a buffer.
   const attrH = parseFloat(svgEl.getAttribute('height'));
   const canvasH = (Number.isFinite(attrH) && attrH > vh ? attrH : vh) + 40;
   const canvasW = vw;
 
   const bounds = _clipBounds(svgEl);
+
+  (config.hidden_ids || []).forEach(id => {
+    const el = svgEl.querySelector(`[id="${_esc(id)}"]`);
+    if (el) el.remove();
+  });
 
   _setupExportClips(svgEl, config, bounds);
 
@@ -169,7 +217,7 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
   // Without this, the opaque white rect is baked into every frame and the
   // alpha channel in the ProRes output has no effect.
   if (transparent) {
-    const bg = live.querySelector('rect');
+    const bg = _findBackgroundRect(live);
     if (bg) bg.style.opacity = '0';
   }
 
@@ -236,7 +284,11 @@ async function _cleanFrames(ff, count) {
 // SVG export: build a SMIL-animated SVG (for download, not for canvas).
 // Uses animate.js because the output is played in a browser, not serialised.
 async function exportSvg(svgString, config) {
-  const svgEl    = new DOMParser().parseFromString(svgString, 'image/svg+xml').documentElement;
+  const svgEl = new DOMParser().parseFromString(svgString, 'image/svg+xml').documentElement;
+  (config.hidden_ids || []).forEach(id => {
+    const el = svgEl.querySelector(`[id="${_esc(id)}"]`);
+    if (el) el.remove();
+  });
   const animated = buildAnimatedSvg(svgEl, config); // from animate.js
   const out      = new XMLSerializer().serializeToString(animated);
   _download(new Blob([out], { type: 'image/svg+xml' }), 'animated.svg');

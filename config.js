@@ -4,4 +4,5 @@ const CONFIG = {
   defaultTotalDuration:   8,
   defaultElementDuration: 2,
   defaultFetchWidth:      720,
+  testChartId:            'scatter_plot',
 };
