@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>export.js tests</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace; padding: 32px; background: #fff; color: #1a1a1a; }
+    h1 { font-size: 17px; margin: 0 0 6px; }
+    .suite-name { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin: 24px 0 6px; }
+    .test { padding: 5px 10px; margin: 2px 0; border-radius: 3px; font-size: 13px; font-family: "SF Mono", "Fira Code", Consolas, monospace; }
+    .pass { background: #e6f4ea; color: #1e7e34; }
+    .fail { background: #fce8e6; color: #c5221f; font-weight: 600; }
+    .summary { margin-top: 24px; font-size: 14px; font-weight: 700; padding: 10px 14px; border-radius: 4px; display: inline-block; }
+    .summary.all-pass { background: #e6f4ea; color: #1e7e34; }
+    .summary.has-fail  { background: #fce8e6; color: #c5221f; }
+  </style>
+</head>
+<body>
+
+<h1>export.js — _findBackgroundRect</h1>
+<div id="results"></div>
+
+<!--
+  Load order mirrors index.html.
+  animate.js is included because export.js calls _clipBounds (defined there)
+  at function-call time — not needed for _findBackgroundRect, but avoids a
+  ReferenceError if the browser eagerly parses call sites.
+-->
+<script src="config.js"></script>
+<script src="animate.js"></script>
+<script src="export.js"></script>
+
+<script>
+'use strict';
+
+// ── Minimal harness ───────────────────────────────────────────────────────────
+
+const _results = [];
+
+function test(suiteName, name, fn) {
+  try {
+    fn();
+    _results.push({ suite: suiteName, name, pass: true });
+  } catch (e) {
+    _results.push({ suite: suiteName, name, pass: false, error: e.message });
+  }
+}
+
+function assert(condition, msg) {
+  if (!condition) throw new Error(msg || 'Assertion failed');
+}
+
+function parseSvg(str) {
+  return new DOMParser().parseFromString(str, 'image/svg+xml').documentElement;
+}
+
+// ── Test SVGs ─────────────────────────────────────────────────────────────────
+
+const SUITE = '_findBackgroundRect';
+
+// 1. Background rect is a direct child of the SVG root.
+test(SUITE, 'finds background rect as direct SVG child', () => {
+  const svg = parseSvg(`
+    <svg viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="600" height="400" fill="white"/>
+      <g id="lines-svg">
+        <g id="series-1"><path style="fill:none;stroke:blue" d="M0,200 L600,100"/></g>
+      </g>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg !== null, 'expected a rect to be found');
+  assert(parseFloat(bg.getAttribute('width'))  === 600, `width should be 600, got ${bg.getAttribute('width')}`);
+  assert(parseFloat(bg.getAttribute('height')) === 400, `height should be 400, got ${bg.getAttribute('height')}`);
+});
+
+// 2. A <defs> block containing clip-path rects appears before the background rect.
+//    This is the exact structure that breaks live.querySelector('rect').
+test(SUITE, 'skips clip-path rects inside <defs>, finds background rect after defs', () => {
+  const svg = parseSvg(`
+    <svg viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="clip-0">
+          <rect x="0" y="-60" width="600" height="520"/>
+        </clipPath>
+        <clipPath id="clip-1">
+          <rect x="0" y="-60" width="600" height="520"/>
+        </clipPath>
+      </defs>
+      <rect x="0" y="0" width="600" height="400" fill="white"/>
+      <g id="lines-svg">
+        <g id="series-1" clip-path="url(#clip-0)"><path style="fill:none;stroke:blue" d="M0,200 L600,100"/></g>
+      </g>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg !== null, 'expected background rect to be found despite defs rects');
+  assert(bg.getAttribute('fill') === 'white', `expected fill="white", got "${bg.getAttribute('fill')}"`);
+});
+
+// 3. Background rect is one level deep inside a wrapper <g> — not a direct SVG child.
+test(SUITE, 'finds background rect nested one level inside a non-defs group', () => {
+  const svg = parseSvg(`
+    <svg viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+      <g id="background-layer">
+        <rect x="0" y="0" width="600" height="400" fill="white"/>
+      </g>
+      <g id="lines-svg">
+        <g id="series-1"><path style="fill:none;stroke:blue" d="M0,200 L600,100"/></g>
+      </g>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg !== null, 'expected background rect to be found inside wrapper group');
+  assert(parseFloat(bg.getAttribute('width')) === 600, `width should be 600, got ${bg.getAttribute('width')}`);
+});
+
+// 4. No full-viewBox rect in the SVG at all → null.
+test(SUITE, 'returns null when no full-viewBox rect exists', () => {
+  const svg = parseSvg(`
+    <svg viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+      <g id="lines-svg">
+        <g id="series-1"><path style="fill:none;stroke:blue" d="M0,200 L600,100"/></g>
+      </g>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg === null, `expected null, got ${bg}`);
+});
+
+// 5. Real Datawrapper SVGs have no viewBox — they use width/height attributes.
+//    The background rect also uses transform="translate(0,0)" rather than x/y attributes.
+//    This is the exact structure of a real Datawrapper export.
+test(SUITE, 'finds background rect in a real Datawrapper SVG (no viewBox, transform instead of x/y)', () => {
+  const svg = parseSvg(`
+    <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+         id="exportSvg" width="1306" height="572">
+      <defs/>
+      <rect width="1306" height="572" transform="translate(0, 0)"
+            fill="rgb(255, 255, 255)" style="fill: rgb(255, 255, 255);"/>
+      <g>
+        <g id="lines-svg">
+          <g id="series-1"><path style="fill:none;stroke:blue" d="M0,200 L1306,100"/></g>
+        </g>
+      </g>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg !== null, 'expected background rect to be found with no viewBox');
+  assert(parseFloat(bg.getAttribute('width'))  === 1306, `width should be 1306, got ${bg.getAttribute('width')}`);
+  assert(parseFloat(bg.getAttribute('height')) === 572,  `height should be 572, got ${bg.getAttribute('height')}`);
+});
+
+// 5b. No viewBox AND no width/height → null (genuinely can't determine dimensions).
+test(SUITE, 'returns null when SVG has neither viewBox nor width/height', () => {
+  const svg = parseSvg(`
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="600" height="400" fill="white"/>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg === null, 'expected null when neither viewBox nor dimensions are present');
+});
+
+// 6. Small rects (legend swatches, tick marks) must not be returned.
+test(SUITE, 'does not pick up small legend / tick rects as background', () => {
+  const svg = parseSvg(`
+    <svg viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="600" height="400" fill="white"/>
+      <rect x="12" y="380" width="10" height="10" fill="blue"/>
+      <rect x="30" y="380" width="10" height="10" fill="red"/>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg !== null, 'expected the background rect to be found');
+  assert(parseFloat(bg.getAttribute('width')) === 600, 'should return the 600×400 rect, not a swatch');
+});
+
+// 7. Non-zero viewBox origin (e.g. viewBox="-10 -10 620 420") — background rect
+//    starts at the viewBox origin, not at 0,0.
+test(SUITE, 'handles non-zero viewBox origin correctly', () => {
+  const svg = parseSvg(`
+    <svg viewBox="-10 -10 620 420" xmlns="http://www.w3.org/2000/svg">
+      <rect x="-10" y="-10" width="620" height="420" fill="white"/>
+    </svg>`);
+  const bg = _findBackgroundRect(svg);
+  assert(bg !== null, 'expected background rect to be found with offset viewBox');
+  assert(parseFloat(bg.getAttribute('width')) === 620, `width should be 620, got ${bg.getAttribute('width')}`);
+});
+
+// 8. Contrast test: prove the OLD querySelector approach was broken in the real
+//    Datawrapper scenario. After _setupExportClips runs, the initially-empty <defs/>
+//    gains clip-path rects. querySelector('rect') then finds those first.
+//    This mirrors exactly what happens during a real MOV export.
+test(SUITE, 'old querySelector returns wrong rect after _setupExportClips adds clip rects to defs', () => {
+  const svg = parseSvg(`
+    <svg xmlns="http://www.w3.org/2000/svg" id="exportSvg" width="1306" height="572">
+      <defs>
+        <clipPath id="ecl-0">
+          <rect x="0" y="-60" width="1306" height="632"/>
+        </clipPath>
+      </defs>
+      <rect width="1306" height="572" transform="translate(0, 0)"
+            fill="rgb(255, 255, 255)" style="fill: rgb(255, 255, 255);"/>
+      <g id="lines-svg">
+        <g id="series-1" clip-path="url(#ecl-0)">
+          <path style="fill:none;stroke:blue" d="M0,200 L1306,100"/>
+        </g>
+      </g>
+    </svg>`);
+
+  const oldWay = svg.querySelector('rect');
+  const newWay = _findBackgroundRect(svg);
+
+  assert(oldWay !== newWay,
+    'old and new should find different elements — if equal, the fix has no effect on real exports');
+  assert(oldWay.closest('defs') !== null,
+    `old querySelector found a rect inside <defs> (this is a clip-path rect, not the background)`);
+  assert(newWay !== null,
+    '_findBackgroundRect should find the background rect');
+  assert(parseFloat(newWay.getAttribute('width')) === 1306,
+    `new way should find the 1306×572 background rect, got width=${newWay.getAttribute('width')}`);
+});
+
+// ── Render results ────────────────────────────────────────────────────────────
+
+const container = document.getElementById('results');
+const suites    = [...new Set(_results.map(r => r.suite))];
+
+for (const suite of suites) {
+  const rows = _results.filter(r => r.suite === suite);
+  const div  = document.createElement('div');
+  div.innerHTML = `<div class="suite-name">${suite}</div>` +
+    rows.map(r =>
+      `<div class="test ${r.pass ? 'pass' : 'fail'}">
+        ${r.pass ? '✓' : '✗'} ${r.name}${r.pass ? '' : ` — ${r.error}`}
+       </div>`
+    ).join('');
+  container.appendChild(div);
+}
+
+const passed = _results.filter(r =>  r.pass).length;
+const failed = _results.filter(r => !r.pass).length;
+const summary = document.createElement('div');
+summary.className = `summary ${failed === 0 ? 'all-pass' : 'has-fail'}`;
+summary.textContent = `${passed} passed, ${failed} failed`;
+container.appendChild(summary);
+</script>
+
+</body>
+</html>
