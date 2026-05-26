@@ -304,16 +304,31 @@ async function exportGif(svgString, config, totalDuration, onStatus) {
   const ff = await _loadFfmpeg(onStatus);
   await _writeFrames(ff, frames, onStatus);
 
+  // Two-pass palette approach: pass 1 builds an optimal 256-colour palette from
+  // the actual frame content; pass 2 encodes with that palette.
+  // Without this, ffmpeg uses a generic palette that cannot faithfully represent
+  // chart colours and produces visible dithering/smearing (especially yellows).
+  const scaleFilter = `fps=${fps},scale=${width}:-1:flags=lanczos`;
+  const inputArgs   = ['-framerate', String(fps), '-i', 'frame_%04d.png'];
+
+  onStatus('Building GIF palette…');
+  await ff.exec([
+    ...inputArgs,
+    '-vf', `${scaleFilter},palettegen=stats_mode=diff`,
+    'palette.png',
+  ]);
+
   onStatus('Encoding GIF…');
   await ff.exec([
-    '-framerate', String(fps),
-    '-i',         'frame_%04d.png',
-    '-vf',        `fps=${fps},scale=${width}:-1:flags=lanczos`,
+    ...inputArgs,
+    '-i',              'palette.png',
+    '-filter_complex', `${scaleFilter}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
     'out.gif',
   ]);
 
   const data = await ff.readFile('out.gif');
   await _cleanFrames(ff, frames.length);
+  await ff.deleteFile('palette.png').catch(() => {});
   await ff.deleteFile('out.gif').catch(() => {});
 
   _download(new Blob([data.buffer], { type: 'image/gif' }), 'animated.gif');
