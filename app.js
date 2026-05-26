@@ -195,6 +195,7 @@ const _HIDE_SKIP = new Set([
   'group-svg',
   'svg-main-svg',
   'tooltip-layer-svg',
+  'front-svg',  // scatter plot axis overlay — contains axes, too broad to hide directly
   ...CONFIG.chartRoots.map(r => r.rootId),
 ]);
 
@@ -419,6 +420,9 @@ async function preview() {
       const el = _findById(svgEl, id);
       if (el) el.remove();
     });
+    // Hide the Datawrapper background rect so the preview container CSS background shows through.
+    const bgRect = svgEl.querySelector('rect');
+    if (bgRect) bgRect.style.display = 'none';
     const animated = buildAnimatedSvg(svgEl, config); // animate.js
 
     const pc = document.getElementById('preview-container');

@@ -95,10 +95,13 @@ function _makeElement(id, domEl, defaultAnimation) {
 
 // Convert a Datawrapper-style id like "RBNZ-svg actual-svg rate-svg"
 // into a readable label like "RBNZ Actual Rate".
+// Strips trailing numeric-only tokens — bar chart IDs end in a positional index
+// (e.g. "Q1-svg 2024-0-svg") that has no display value.
 function _labelFromId(id) {
   return id
     .replace(/-svg/g, '')
     .replace(/[-_]/g, ' ')
+    .replace(/\s+\d+$/, '')
     .replace(/\b\w/g, c => c.toUpperCase())
     .trim();
 }
