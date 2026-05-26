@@ -214,6 +214,12 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
   host.innerHTML = new XMLSerializer().serializeToString(svgEl);
   document.body.appendChild(host);
   const live = host.querySelector('svg');
+  // Without a viewBox, setting width=3840 expands the canvas but leaves the internal
+  // coordinate space at the original size — content draws tiny in the top-left corner.
+  // Stamp a viewBox matching the natural dimensions so the renderer scales content to fill.
+  if (!live.getAttribute('viewBox')) {
+    live.setAttribute('viewBox', `0 0 ${naturalW} ${naturalH}`);
+  }
   live.setAttribute('width',  canvasW);
   live.setAttribute('height', canvasH);
   live.style.overflow = 'visible';
