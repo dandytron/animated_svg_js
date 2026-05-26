@@ -284,7 +284,7 @@
       position: absolute;
       right: 0;
       top: calc(100% + 4px);
-      min-width: 160px;
+      min-width: 200px;
       background: #fff;
       border: 1px solid #ccc;
       border-radius: 3px;
@@ -303,6 +303,28 @@
       color: #1a1a1a;
     }
     #export-menu button:hover { background: #f5f5f5; }
+    .menu-group-label {
+      display: block;
+      padding: 7px 14px 3px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #999;
+    }
+    .menu-divider { margin: 4px 0; border: none; border-top: 1px solid #eee; }
+
+    #queue-all-btn {
+      padding: 7px 14px;
+      font-size: 13px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+      color: #555;
+      cursor: pointer;
+    }
+    #queue-all-btn:hover:not(:disabled) { background: #f5f5f5; color: #1a1a1a; border-color: #aaa; }
+    #queue-all-btn:disabled { opacity: 0.35; cursor: default; }
 
     /* ── Status panel ──────────────────────────────────────────────────────── */
 
@@ -412,13 +434,23 @@
             <label class="total-dur-label">
               Total duration: <input type="number" id="total-duration" value="8" min="1" step="0.5"> s
             </label>
+            <button id="queue-all-btn" disabled>Queue all</button>
             <button id="preview-btn">Preview</button>
             <div class="export-wrap">
               <button id="export-btn">Export ▾</button>
               <div id="export-menu" hidden>
                 <button data-fmt="svg">Animated SVG</button>
                 <button data-fmt="gif">GIF</button>
-                <button data-fmt="mov">ProRes MOV</button>
+                <hr class="menu-divider">
+                <span class="menu-group-label">ProRes MOV — PAL 25fps</span>
+                <button data-fmt="mov" data-fps="25" data-width="3840">4K (3840×2160)</button>
+                <button data-fmt="mov" data-fps="25" data-width="1920">1080p (1920×1080)</button>
+                <button data-fmt="mov" data-fps="25" data-width="960">Preview (960×540)</button>
+                <hr class="menu-divider">
+                <span class="menu-group-label">ProRes MOV — NTSC 29.97fps</span>
+                <button data-fmt="mov" data-fps="29.97" data-width="3840">4K (3840×2160)</button>
+                <button data-fmt="mov" data-fps="29.97" data-width="1920">1080p (1920×1080)</button>
+                <button data-fmt="mov" data-fps="29.97" data-width="960">Preview (960×540)</button>
               </div>
             </div>
           </div>

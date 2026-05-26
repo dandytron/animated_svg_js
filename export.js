@@ -175,8 +175,7 @@ function _findBackgroundRect(svgEl) {
 
 // ── Frame capture ─────────────────────────────────────────────────────────────
 
-async function captureFrames(svgString, config, totalDuration, onProgress, { transparent = false } = {}) {
-  const fps         = 30;
+async function captureFrames(svgString, config, totalDuration, onProgress, { transparent = false, fps = 30, targetWidth = null } = {}) {
   const totalFrames = Math.ceil(totalDuration * fps);
 
   const parser = new DOMParser();
@@ -190,9 +189,15 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
 
   // SVG content (footer notes, captions) often extends below the declared height.
   // Take the larger of declared height and explicit height attribute, plus a buffer.
-  const attrH = parseFloat(svgEl.getAttribute('height'));
-  const canvasH = (Number.isFinite(attrH) && attrH > vh ? attrH : vh) + 40;
-  const canvasW = vw;
+  const attrH    = parseFloat(svgEl.getAttribute('height'));
+  const naturalW = vw;
+  const naturalH = (Number.isFinite(attrH) && attrH > vh ? attrH : vh) + 40;
+
+  // Scale canvas to targetWidth (maintaining aspect ratio). The +40 footer buffer
+  // scales with the image so it remains proportionally the same size at any resolution.
+  const scale   = targetWidth ? targetWidth / naturalW : 1;
+  const canvasW = Math.round(naturalW * scale);
+  const canvasH = Math.round(naturalH * scale);
 
   const bounds = _clipBounds(svgEl);
 
@@ -335,26 +340,29 @@ async function exportGif(svgString, config, totalDuration, onStatus) {
   onStatus('Done.');
 }
 
-async function exportMov(svgString, config, totalDuration, onStatus) {
+async function exportMov(svgString, config, totalDuration, onStatus, { fps = 30, targetWidth = null } = {}) {
+  // 29.97fps must be passed as the exact rational 30000/1001 for standards-compliant output.
+  const fpsArg = Math.abs(fps - 29.97) < 0.01 ? '30000/1001' : String(fps);
+
   onStatus('Capturing frames…');
-  const { frames, width, height, fps } = await captureFrames(
+  const { frames, width, height } = await captureFrames(
     svgString, config, totalDuration,
     (i, n) => onStatus(`Capturing frame ${i} of ${n}…`),
-    { transparent: true },
+    { transparent: true, fps, targetWidth },
   );
 
   const ff = await _loadFfmpeg(onStatus);
   await _writeFrames(ff, frames, onStatus);
 
-  // ProRes 4444 with alpha — same command as the Python prototype's ffmpeg call.
-  onStatus('Encoding ProRes 4444…');
+  onStatus(`Encoding ProRes 4444 (${fps}fps, ${width}×${height})…`);
   await ff.exec([
-    '-framerate',  String(fps),
+    '-framerate',  fpsArg,
     '-i',          'frame_%04d.png',
     '-vcodec',     'prores_ks',
     '-pix_fmt',    'yuva444p10le',
     '-alpha_bits', '16',
     '-profile:v',  '4444',
+    '-r',          fpsArg,
     'out.mov',
   ]);
 

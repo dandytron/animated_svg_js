@@ -24,11 +24,16 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('load-btn').addEventListener('click', loadSvg);
   document.getElementById('test-btn').addEventListener('click', loadTestSvg);
   document.getElementById('total-duration').addEventListener('input', validateOverhangs);
+  document.getElementById('queue-all-btn').addEventListener('click', queueAll);
   document.getElementById('preview-btn').addEventListener('click', preview);
   document.getElementById('export-btn').addEventListener('click', toggleExportMenu);
   document.getElementById('export-menu').addEventListener('click', e => {
     const btn = e.target.closest('button[data-fmt]');
-    if (btn) exportAs(btn.dataset.fmt);
+    if (!btn) return;
+    const opts = {};
+    if (btn.dataset.fps)   opts.fps        = parseFloat(btn.dataset.fps);
+    if (btn.dataset.width) opts.targetWidth = parseInt(btn.dataset.width, 10);
+    exportAs(btn.dataset.fmt, opts);
   });
   document.addEventListener('click', e => {
     const menu = document.getElementById('export-menu');
@@ -296,6 +301,23 @@ function _labelFromHideId(id) {
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
+function queueAll() {
+  for (const el of state.elements) {
+    if (state.queue.some(q => q.group_id === el.group_id)) continue;
+    state.queue.push({
+      group_id:         el.group_id,
+      label:            el.label,
+      animation_type:   el.animation_type,
+      start_time:       0,
+      element_duration: CONFIG.defaultElementDuration,
+      color:            el.color,
+    });
+    const dom = _findById(document.getElementById('svg-container'), el.group_id);
+    if (dom) dom.classList.add(CONFIG.selectedClass);
+  }
+  renderQueue();
+}
+
 function toggleElement(groupId) {
   const idx   = state.queue.findIndex(q => q.group_id === groupId);
   const domEl = _findById(document.getElementById('svg-container'), groupId);
@@ -319,6 +341,11 @@ function toggleElement(groupId) {
 }
 
 function renderQueue() {
+  const allQueued = state.elements.length > 0 &&
+    state.elements.every(e => state.queue.some(q => q.group_id === e.group_id));
+  const btn = document.getElementById('queue-all-btn');
+  btn.disabled = state.elements.length === 0 || allQueued;
+
   const container = document.getElementById('queue-items');
   if (state.queue.length === 0) {
     container.innerHTML = '<p class="queue-empty">Click elements in the SVG above to add them to the queue.</p>';
@@ -443,7 +470,7 @@ function toggleExportMenu() {
   menu.hidden = !menu.hidden;
 }
 
-async function exportAs(fmt) {
+async function exportAs(fmt, opts = {}) {
   document.getElementById('export-menu').hidden = true;
   if (state.queue.length === 0) return;
 
@@ -473,7 +500,7 @@ async function exportAs(fmt) {
         onStatus('Done.', 'done');
         break;
       case 'mov':
-        await exportMov(state.svg, config, config.total_duration, onStatus);  // export.js
+        await exportMov(state.svg, config, config.total_duration, onStatus, opts);  // export.js
         onStatus('Done.', 'done');
         break;
     }
