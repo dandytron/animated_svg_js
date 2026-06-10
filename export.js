@@ -226,6 +226,19 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
   host.innerHTML = new XMLSerializer().serializeToString(svgEl);
   document.body.appendChild(host);
   const live = host.querySelector('svg');
+
+  // For transparent export (MOV), hide the Datawrapper background rect.
+  // Without this, the opaque white rect is baked into every frame and the
+  // alpha channel in the ProRes output has no effect.
+  // MUST run before the viewBox stamp below: _findBackgroundRect matches the
+  // rect against the SVG's dimensions, and the stamped viewBox includes the
+  // +40 footer buffer — the 710×458 rect no longer matches 710×498 and the
+  // white background silently survives into every frame.
+  if (transparent) {
+    const bg = _findBackgroundRect(live);
+    if (bg) bg.style.opacity = '0';
+  }
+
   // Without a viewBox, setting width=3840 expands the canvas but leaves the internal
   // coordinate space at the original size — content draws tiny in the top-left corner.
   // Stamp a viewBox matching the natural dimensions so the renderer scales content to fill.
@@ -235,14 +248,6 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
   live.setAttribute('width',  canvasW);
   live.setAttribute('height', canvasH);
   live.style.overflow = 'visible';
-
-  // For transparent export (MOV), hide the Datawrapper background rect.
-  // Without this, the opaque white rect is baked into every frame and the
-  // alpha channel in the ProRes output has no effect.
-  if (transparent) {
-    const bg = _findBackgroundRect(live);
-    if (bg) bg.style.opacity = '0';
-  }
 
   const frames = [];
   try {
