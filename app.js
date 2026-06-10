@@ -273,8 +273,8 @@ function renderHiddenList() {
   panel.hidden = false;
   document.getElementById('hidden-items').innerHTML = [...state.hidden].map(id => `
     <div class="hidden-row">
-      <span class="hidden-label">${_esc(_labelFromHideId(id))}</span>
-      <button class="restore-btn" data-id="${_esc(id)}">Restore</button>
+      <span class="hidden-label">${_escHtml(_labelFromHideId(id))}</span>
+      <button class="restore-btn" data-id="${_escHtml(id)}">Restore</button>
     </div>
   `).join('');
   document.querySelectorAll('.restore-btn').forEach(btn =>
@@ -355,7 +355,7 @@ function renderQueue() {
   container.innerHTML = state.queue.map((item, i) => `
     <div class="queue-row" data-index="${i}">
       <span class="queue-color" style="background:${item.color || '#888'}"></span>
-      <span class="queue-label">${_esc(item.label)}</span>
+      <span class="queue-label">${_escHtml(item.label)}</span>
       <select class="anim-type" data-index="${i}">${_animOpts(item.animation_type)}</select>
       <label class="timing-label">Start <input type="number" class="timing-input start-time" value="${item.start_time}" min="0" step="0.1" data-index="${i}"> s</label>
       <label class="timing-label">Dur <input type="number" class="timing-input elem-dur" value="${item.element_duration}" min="0.1" step="0.1" data-index="${i}"> s</label>
@@ -391,7 +391,10 @@ function _animOpts(selected) {
   ].map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`).join('');
 }
 
-function _esc(s) {
+// HTML-escape for innerHTML interpolation. Named _escHtml (not _esc) because
+// detect.js / animate.js / export.js define a global _esc for CSS attribute
+// selectors — a same-named declaration here would silently overwrite theirs.
+function _escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
@@ -447,8 +450,10 @@ async function preview() {
       const el = _findById(svgEl, id);
       if (el) el.remove();
     });
-    // Hide the Datawrapper background rect so the preview container CSS background shows through.
-    const bgRect = svgEl.querySelector('rect');
+    // Hide the Datawrapper background rect so the preview container CSS background
+    // shows through. _findBackgroundRect (export.js) matches by full-canvas size,
+    // so charts whose first <rect> is real content are handled correctly.
+    const bgRect = _findBackgroundRect(svgEl);
     if (bgRect) bgRect.style.display = 'none';
     const animated = buildAnimatedSvg(svgEl, config); // animate.js
 
