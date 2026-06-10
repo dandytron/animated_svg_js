@@ -1,0 +1,11 @@
+{
+  "rewrites": [
+    { "source": "/fetch-svg", "destination": "/api/fetch-svg" }
+  ],
+  "functions": {
+    "api/fetch-svg.js": {
+      "maxDuration": 30,
+      "includeFiles": "fonts/**"
+    }
+  }
+}

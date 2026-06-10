@@ -1,0 +1,14 @@
+# Replaces .gitignore for deployment uploads — note fonts/ is deliberately
+# ABSENT here: the licensed Knowledge woffs must upload to Vercel (used by
+# api/fetch-svg.js) while staying out of the public git repo.
+.env
+.claude
+.git
+__pycache__
+*.pyc
+.DS_Store
+*:Zone.Identifier
+tests
+samples
+server.py
+Screenshot*.png
