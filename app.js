@@ -9,11 +9,15 @@
 'use strict';
 
 const state = {
-  svg:      null,  // raw SVG string from /fetch-svg
+  svg:      null,  // raw SVG string (Datawrapper fetch, file upload, or paste)
   elements: [],    // detected AnimatableElements (client-side)
   queue:    [],    // {group_id, label, animation_type, start_time, element_duration, color}
   hidden:   new Set(), // IDs of elements removed from preview and export
 };
+
+// On static hosts (GitHub Pages) there is no /fetch-svg proxy — the Datawrapper
+// loader is hidden and charts come in via file upload, paste, or the example.
+const IS_STATIC_HOST = location.hostname.endsWith('github.io') || location.protocol === 'file:';
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
@@ -23,6 +27,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('load-btn').addEventListener('click', loadSvg);
   document.getElementById('test-btn').addEventListener('click', loadTestSvg);
+  document.getElementById('file-btn').addEventListener('click', () =>
+    document.getElementById('file-input').click());
+  document.getElementById('file-input').addEventListener('change', loadSvgFile);
+  document.addEventListener('paste', onPasteSvg);
+
+  if (IS_STATIC_HOST) {
+    document.getElementById('chart-id-input').hidden = true;
+    document.getElementById('load-btn').hidden = true;
+    document.getElementById('input-label').textContent = 'Open an SVG file exported from Datawrapper';
+  }
   document.getElementById('total-duration').addEventListener('input', validateOverhangs);
   document.getElementById('queue-all-btn').addEventListener('click', queueAll);
   document.getElementById('preview-btn').addEventListener('click', preview);
@@ -57,31 +71,56 @@ function extractChartId(raw) {
 
 // ── Load SVG ──────────────────────────────────────────────────────────────────
 
+// Shared tail of every load path: parse, detect, reset queue state, render.
+// Returns false (with an input error shown) if the string isn't a parseable SVG.
+function loadSvgString(svg) {
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  if (doc.querySelector('parsererror') || doc.documentElement.tagName.toLowerCase() !== 'svg') {
+    showInputError("That doesn't look like a valid SVG.");
+    return false;
+  }
+  clearInputError();
+  state.svg      = svg;
+  state.elements = detectElements(doc.documentElement);
+  state.queue    = [];
+  state.hidden   = new Set();
+  injectSvg();
+  renderQueue();
+  document.getElementById('queue-section').hidden = false;
+  return true;
+}
+
 async function loadTestSvg() {
   const btn = document.getElementById('test-btn');
   btn.disabled = true; btn.textContent = 'Loading…';
   try {
-    const resp = await fetch('/test-svg');
+    const resp = await fetch('examples/multi_line_graph.svg');
     if (!resp.ok) {
-      showInputError('test.svg not found on server — check server logs.');
+      showInputError('examples/multi_line_graph.svg not found.');
       return;
     }
-    const { svg } = await resp.json();
+    const svg = await resp.text();
     document.getElementById('chart-id-input').value = CONFIG.testChartId;
-    clearInputError();
-    state.svg      = svg;
-    const svgEl    = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
-    state.elements = detectElements(svgEl);
-    state.queue    = [];
-    state.hidden   = new Set();
-    injectSvg();
-    renderQueue();
-    document.getElementById('queue-section').hidden = false;
+    loadSvgString(svg);
   } catch {
     showInputError("Couldn't load test SVG.");
   } finally {
     btn.disabled = false; btn.textContent = 'Test';
   }
+}
+
+async function loadSvgFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  loadSvgString(await file.text());
+  e.target.value = '';  // allow re-selecting the same file
+}
+
+function onPasteSvg(e) {
+  // Ignore pastes aimed at form fields (chart IDs, durations, labels).
+  if (e.target.closest('input, textarea, [contenteditable]')) return;
+  const text = (e.clipboardData.getData('text/plain') || '').trim();
+  if (text.startsWith('<?xml') || text.startsWith('<svg')) loadSvgString(text);
 }
 
 async function loadSvg() {
@@ -107,18 +146,7 @@ async function loadSvg() {
       return;
     }
     const { svg } = await resp.json();
-    state.svg = svg;
-
-    // Detection runs client-side — no server call needed
-    const parser = new DOMParser();
-    const svgEl  = parser.parseFromString(svg, 'image/svg+xml').documentElement;
-    state.elements = detectElements(svgEl);  // detect.js
-    state.queue    = [];
-    state.hidden   = new Set();
-
-    injectSvg();
-    renderQueue();
-    document.getElementById('queue-section').hidden = false;
+    loadSvgString(svg);
   } catch {
     showInputError("Couldn't fetch that chart — check the ID and try again.");
   } finally {

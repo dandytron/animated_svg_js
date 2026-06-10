@@ -10,7 +10,17 @@ Requires the Flask server to be running (python3 server.py).
 """
 
 import json
+import os
 import sys
+
+# This WSL2 box lacks chromium's system libs (no sudo); point at the
+# locally-extracted copies. Rebuild if missing:
+#   mkdir -p ~/.pwlibs/debs && cd ~/.pwlibs/debs && \
+#   apt-get download libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libxdamage1 libatspi2.0-0 && \
+#   for f in *.deb; do dpkg -x "$f" ../extracted/; done
+_PWLIBS = os.path.expanduser('~/.pwlibs/extracted/usr/lib/x86_64-linux-gnu')
+if os.path.isdir(_PWLIBS):
+    os.environ['LD_LIBRARY_PATH'] = _PWLIBS + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
 
 from playwright.sync_api import sync_playwright
 
@@ -55,7 +65,7 @@ def load_via_test_button(page):
 
 
 def test_load_and_detection(page):
-    # ── Test button: loads multi_line_graph via /test-svg ──
+    # ── Test button: loads examples/multi_line_graph.svg statically ──
     page.goto(BASE)
     load_via_test_button(page)
 
@@ -168,7 +178,7 @@ def test_animated_svg_export_structure(page):
     """exportSvg path: buildAnimatedSvg output contains correct SMIL per type."""
     out = page.evaluate("""
       async () => {
-        const svg   = await (await fetch('/test-svg')).json().then(j => j.svg);
+        const svg   = await (await fetch('examples/multi_line_graph.svg')).text();
         const svgEl = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
         const config = { elements: [
           { group_id: 'SALESFORCE-svg',  animation_type: 'draw_on', start_time: 0, element_duration: 2 },

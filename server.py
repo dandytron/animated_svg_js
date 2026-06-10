@@ -4,16 +4,16 @@ Thin proxy server — the only server-side component in the JS prototype.
 Does one thing: proxies /fetch-svg to the Datawrapper API, which cannot be
 called directly from the browser due to CORS restrictions enforced by
 Datawrapper. Everything else (detection, animation, preview, export) runs
-in the browser.
+in the browser, and the static site also deploys standalone to GitHub Pages
+(where Datawrapper fetch is unavailable — use file upload/paste instead).
 
 Reuses datawrapper_api.py from the parent directory to avoid duplication.
 """
 
 import sys
 from pathlib import Path
-from flask import Flask, jsonify, request, send_from_directory, Response
+from flask import Flask, jsonify, request, send_from_directory
 from dotenv import load_dotenv
-import urllib.request
 
 # Reuse the Datawrapper fetch + sanitize logic from the Python prototype
 sys.path.insert(0, str(Path(__file__).parent.parent / 'animated_svg'))
@@ -24,56 +24,9 @@ load_dotenv(Path(__file__).parent.parent / 'animated_svg' / '.env')
 app = Flask(__name__, static_folder='.', static_url_path='')
 
 
-@app.after_request
-def _coop_headers(response):
-    # Required for ffmpeg.wasm to use SharedArrayBuffer (multi-threaded encoding).
-    response.headers['Cross-Origin-Opener-Policy']   = 'same-origin'
-    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
-    return response
-
-
 @app.route('/')
 def index():
     return send_from_directory('.', 'index.html')
-
-
-# Proxy the entire @ffmpeg/ffmpeg ESM package under /ffmpeg-esm/.
-# This is necessary because worker.js is an ES module with relative imports
-# (./const.js, ./errors.js). Serving only worker.js from our origin means those
-# relative paths resolve to localhost — which 404s. Proxying the whole directory
-# keeps relative imports resolving correctly within our origin.
-_proxy_cache: dict[str, bytes] = {}
-
-def _proxy(url: str, filename: str) -> Response:
-    key = url
-    if key not in _proxy_cache:
-        with urllib.request.urlopen(url) as r:
-            _proxy_cache[key] = r.read()
-    mime = 'application/wasm' if filename.endswith('.wasm') else 'text/javascript'
-    return Response(_proxy_cache[key], mimetype=mime)
-
-# Proxy @ffmpeg/ffmpeg ESM — worker.js has relative imports (./const.js, ./errors.js)
-# that must resolve within our origin, not back to unpkg.
-@app.route('/ffmpeg-esm/<path:filename>')
-def ffmpeg_esm_proxy(filename):
-    return _proxy(
-        f'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/{filename}', filename)
-
-# Proxy @ffmpeg/core ESM — needed because the worker imports the core via dynamic
-# import(), which requires an ES module default export. The UMD build has no default
-# export so import().default returns undefined and the core fails to load.
-@app.route('/ffmpeg-core/<path:filename>')
-def ffmpeg_core_proxy(filename):
-    return _proxy(
-        f'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/{filename}', filename)
-
-
-@app.route('/test-svg')
-def test_svg_route():
-    p = Path(__file__).parent / 'examples' / 'multi_line_graph.svg'
-    if not p.exists():
-        return jsonify(error='examples/multi_line_graph.svg not found'), 404
-    return jsonify(svg=p.read_text())
 
 
 @app.route('/fetch-svg', methods=['POST'])

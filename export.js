@@ -270,15 +270,17 @@ async function _loadFfmpeg(onStatus) {
   if (_ffmpeg) return _ffmpeg;
   onStatus('Loading ffmpeg…');
 
-  // All files served from our own origin via proxy routes — no blob URLs needed.
-  // This avoids two problems: (1) COEP blocking cross-origin Worker construction,
+  // All files served same-origin from the vendored ffmpeg-esm/ and ffmpeg-core/
+  // directories — no blob URLs needed. This avoids two problems:
+  // (1) COEP blocking cross-origin Worker construction,
   // (2) ESM relative imports inside worker.js and ffmpeg-core.js failing from blob context.
-  const base           = window.location.origin;
-  const classWorkerURL = `${base}/ffmpeg-esm/worker.js`;
-  const coreURL        = `${base}/ffmpeg-core/ffmpeg-core.js`;
-  const wasmURL        = `${base}/ffmpeg-core/ffmpeg-core.wasm`;
+  // URLs resolve against the document, not the origin, so the app also works
+  // hosted under a subpath (GitHub Pages serves at /animated_svg_js/).
+  const classWorkerURL = new URL('ffmpeg-esm/worker.js', document.baseURI).href;
+  const coreURL        = new URL('ffmpeg-core/ffmpeg-core.js', document.baseURI).href;
+  const wasmURL        = new URL('ffmpeg-core/ffmpeg-core.wasm', document.baseURI).href;
 
-  const { FFmpeg } = await import(`${base}/ffmpeg-esm/index.js`);
+  const { FFmpeg } = await import(new URL('ffmpeg-esm/index.js', document.baseURI).href);
 
   onStatus('Initialising ffmpeg…');
   const ff = new FFmpeg();
