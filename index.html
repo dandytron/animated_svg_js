@@ -30,11 +30,35 @@
     }
 
     .subtitle {
-      margin: 0 0 36px;
+      margin: 0 0 16px;
       font-size: 16px;
       font-style: italic;
       color: #e05500;
     }
+
+    .beta-tag {
+      display: inline-block;
+      vertical-align: 6px;
+      margin-left: 8px;
+      padding: 3px 10px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #e05500;
+      border: 2px solid #e05500;
+      border-radius: 999px;
+    }
+
+    .intro-steps {
+      margin: 0 0 36px;
+      padding-left: 20px;
+      font-size: 13.5px;
+      line-height: 1.5;
+      color: #444;
+    }
+    .intro-steps li { margin-bottom: 4px; }
+    .intro-steps li::marker { font-weight: 700; color: #999; }
 
     .field-group { margin-bottom: 24px; }
 
@@ -389,8 +413,13 @@
 
   <main>
     <div class="page">
-      <h1>SVG Animation Tool</h1>
+      <h1>Reuters SVG Animation Tool <span class="beta-tag">beta</span></h1>
       <p class="subtitle">Animate a Datawrapper chart and export it for video.</p>
+      <ol class="intro-steps">
+        <li><strong>Load a chart</strong> — paste a Datawrapper ID or URL, open an SVG file, or click <em>Test</em> to try a sample. Works best on bar charts and line graphs.</li>
+        <li><strong>Build the animation</strong> — click chart elements (or <em>Queue all</em>) and tweak the timings. Click titles or footnotes to hide them.</li>
+        <li><strong>Preview and export</strong> — GIF, animated SVG, or transparent ProRes video for Premiere.</li>
+      </ol>
 
       <div class="field-group">
         <label class="field-label" for="chart-id-input" id="input-label">Enter a chart identifier or URL</label>
