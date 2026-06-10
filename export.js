@@ -51,10 +51,18 @@ function _setupExportClips(svgEl, config, bounds) {
         rect.setAttribute('width',  '0');
         rect.setAttribute('height', bounds.h);
       } else {
-        rect.setAttribute('x',      bounds.x);
-        rect.setAttribute('y',      bounds.y + bounds.h);
-        rect.setAttribute('width',  bounds.w);
+        // grow_from_baseline: per-bar clip anchored at the chart's zero line
+        // (see _growGeometry in animate.js). Geometry is stored as data-*
+        // attributes so _applyAtTime can drive it without re-measuring.
+        const geo = _growGeometry(group) ??
+          { x: bounds.x, w: bounds.w, h: bounds.h, top: bounds.y, bottom: bounds.y + bounds.h, down: false };
+        rect.setAttribute('x',      geo.x);
+        rect.setAttribute('y',      geo.down ? geo.top : geo.bottom);
+        rect.setAttribute('width',  geo.w);
         rect.setAttribute('height', '0');
+        rect.setAttribute('data-top',  geo.top);
+        rect.setAttribute('data-h',    geo.h);
+        rect.setAttribute('data-down', geo.down ? '1' : '0');
       }
       clip.appendChild(rect);
       defs.appendChild(clip);
@@ -92,9 +100,13 @@ function _applyAtTime(svgEl, config, bounds, t) {
       case 'grow_from_baseline': {
         const rect = svgEl.querySelector(`#ecl-${i} rect`);
         if (rect) {
-          const h = p * bounds.h;
+          const top  = parseFloat(rect.getAttribute('data-top'));
+          const full = parseFloat(rect.getAttribute('data-h'));
+          const h    = p * full;
           rect.setAttribute('height', h);
-          rect.setAttribute('y', bounds.y + bounds.h - h);
+          // Positive bars: slide the clip's top edge up so the bottom stays
+          // pinned at the zero line. Negative bars: top edge stays pinned.
+          if (rect.getAttribute('data-down') !== '1') rect.setAttribute('y', top + full - h);
         }
         break;
       }

@@ -91,18 +91,104 @@ function injectPopIn(group, begin) {
   _animate(group, 'opacity', 0, 1, '0s', begin);
 }
 
+// ── Bar geometry (grow_from_baseline) ─────────────────────────────────────────
+
+// Parse the translate(x[, y]) component of an element's transform attribute.
+function _parseTranslate(el) {
+  const m = ((el.getAttribute && el.getAttribute('transform')) || '')
+    .match(/translate\(\s*(-?[\d.eE+]+)(?:[,\s]+(-?[\d.eE+]+))?/);
+  return { x: m ? parseFloat(m[1]) : 0, y: m && m[2] !== undefined ? parseFloat(m[2]) : 0 };
+}
+
+// Union bounding box of all <rect> descendants of group, in the group's own
+// coordinate space. Attribute-based (x/y/width/height + translate transforms)
+// rather than getBBox so it works on detached DOM (DOMParser output).
+function _rectUnionBounds(group) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, found = false;
+  for (const r of group.querySelectorAll('rect')) {
+    const w = parseFloat(r.getAttribute('width')  || '0');
+    const h = parseFloat(r.getAttribute('height') || '0');
+    if (!(w > 0) || !(h > 0)) continue;
+    let x = parseFloat(r.getAttribute('x') || '0');
+    let y = parseFloat(r.getAttribute('y') || '0');
+    for (let node = r; node && node !== group; node = node.parentElement) {
+      const t = _parseTranslate(node);
+      x += t.x; y += t.y;
+    }
+    found = true;
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+  }
+  return found ? { x: minX, y: minY, w: maxX - minX, h: maxY - minY } : null;
+}
+
+// Find the chart's zero line in the bar group's local space: the y value most
+// often shared by sibling bar edges. Positive bars sit ON the baseline and
+// negative bars hang FROM it, so it's the most repeated top/bottom edge across
+// the group's siblings. Returns null when fewer than two edges coincide
+// (single bar, or no shared zero line to infer).
+function _detectBaseline(group) {
+  const parent = group.parentElement;
+  if (!parent) return null;
+  const counts = new Map();
+  for (const sib of parent.children) {
+    const b = _rectUnionBounds(sib);
+    if (!b) continue;
+    const ty = _parseTranslate(sib).y;
+    for (const edge of [b.y + ty, b.y + b.h + ty]) {
+      const key = Math.round(edge * 10) / 10;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  }
+  let best = null, bestN = 0;
+  for (const [v, n] of counts) if (n > bestN) { best = v; bestN = n; }
+  return bestN >= 2 ? best - _parseTranslate(group).y : null;
+}
+
+// Geometry for one bar's grow clip: where the bar is, and whether it grows
+// upward (sits on the baseline) or downward (hangs below it — negative value).
+// Returns null when the group contains no rects; callers fall back to the
+// whole-chart clip so grow applied to non-bar elements still works.
+function _growGeometry(group) {
+  const b = _rectUnionBounds(group);
+  if (!b) return null;
+  const baseline = _detectBaseline(group);
+  const down = baseline !== null &&
+    Math.abs(b.y - baseline) < Math.abs(b.y + b.h - baseline);
+  const pad = 2; // antialias headroom so bar edges are never shaved
+  return { x: b.x - pad, w: b.w + pad * 2, h: b.h, top: b.y, bottom: b.y + b.h, down };
+}
+
 function injectGrowFromBaseline(defs, clipId, group, begin, dur, bounds) {
-  // Two synchronised animations move the clip rect's top edge upward while its
-  // height grows — keeping the bottom edge anchored at the chart baseline.
+  const geo  = _growGeometry(group);
   const clip = _el('clipPath');
   clip.setAttribute('id', clipId);
   const rect = _el('rect');
-  rect.setAttribute('x',      bounds.x);
-  rect.setAttribute('y',      bounds.y + bounds.h); // start at baseline
-  rect.setAttribute('width',  bounds.w);
-  rect.setAttribute('height', '0');
-  _animate(rect, 'height', 0,               bounds.h,            dur, begin);
-  _animate(rect, 'y',      bounds.y + bounds.h, bounds.y,        dur, begin);
+  if (geo) {
+    // Per-bar clip in the group's own space, anchored at the chart's zero line.
+    // Positive bars: top edge slides up as height grows (bottom edge pinned).
+    // Negative bars: top edge pinned at the zero line, height grows downward.
+    rect.setAttribute('x',      geo.x);
+    rect.setAttribute('width',  geo.w);
+    rect.setAttribute('height', '0');
+    if (geo.down) {
+      rect.setAttribute('y', geo.top);
+      _animate(rect, 'height', 0, geo.h, dur, begin);
+    } else {
+      rect.setAttribute('y', geo.bottom);
+      _animate(rect, 'height', 0,          geo.h,   dur, begin);
+      _animate(rect, 'y',      geo.bottom, geo.top, dur, begin);
+    }
+  } else {
+    // No rects to measure (grow applied to a line or area) — whole-chart clip
+    // growing up from the bottom edge.
+    rect.setAttribute('x',      bounds.x);
+    rect.setAttribute('y',      bounds.y + bounds.h);
+    rect.setAttribute('width',  bounds.w);
+    rect.setAttribute('height', '0');
+    _animate(rect, 'height', 0,                   bounds.h, dur, begin);
+    _animate(rect, 'y',      bounds.y + bounds.h, bounds.y, dur, begin);
+  }
   clip.appendChild(rect);
   defs.appendChild(clip);
   group.setAttribute('clip-path', `url(#${clipId})`);
