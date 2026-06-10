@@ -57,6 +57,18 @@ python3 server.py
 # Open http://localhost:5001
 ```
 
+## Tests
+
+`tests/browser_test.py` drives the real app in headless Chromium (Playwright)
+against the running server: detection across all example charts, queue
+behaviour, element hiding, preview SMIL injection, export clip geometry, frame
+capture, and transparent-export alpha.
+
+```bash
+python3 server.py            # in one terminal
+python3 tests/browser_test.py   # in another — needs `pip install playwright`
+```
+
 ## Architecture notes
 
 **Why is there a Python server?** Datawrapper's API cannot be called from the browser (CORS). A one-route proxy is the minimum required server. `server.py` does nothing else — detection, animation, preview, and export all run in the browser.
