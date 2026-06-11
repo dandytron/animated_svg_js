@@ -167,23 +167,25 @@ function clearInputError() {
 function injectSvg() {
   const container = document.getElementById('svg-container');
   container.innerHTML = state.svg;
-  const svgEl = container.querySelector('svg');
-  if (!svgEl) console.warn('app.js: injectSvg — no <svg> element found after injection');
-
-  if (svgEl) {
-    // Datawrapper SVGs have no viewBox. Without it, height:auto can't derive
-    // the aspect ratio when max-width:100% scales the SVG down — height collapses.
-    // Stamp one from the width/height attributes for display only.
-    if (!svgEl.getAttribute('viewBox')) {
-      const w = svgEl.getAttribute('width');
-      const h = svgEl.getAttribute('height');
-      if (w && h) svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    }
-    // Allow content that extends slightly past the declared SVG bounds to show.
-    svgEl.style.overflow = 'visible';
-  };
-
   document.getElementById('no-elements-warning').hidden = state.elements.length > 0;
+
+  const svgEl = container.querySelector('svg');
+  if (!svgEl) {
+    console.warn('app.js: injectSvg — no <svg> element found after injection');
+    renderHiddenList();
+    return;
+  }
+
+  // Datawrapper SVGs have no viewBox. Without it, height:auto can't derive
+  // the aspect ratio when max-width:100% scales the SVG down — height collapses.
+  // Stamp one from the width/height attributes for display only.
+  if (!svgEl.getAttribute('viewBox')) {
+    const w = svgEl.getAttribute('width');
+    const h = svgEl.getAttribute('height');
+    if (w && h) svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  }
+  // Allow content that extends slightly past the declared SVG bounds to show.
+  svgEl.style.overflow = 'visible';
 
   for (const el of state.elements) {
     // Scope to selectable roots: duplicate IDs in value-label groups must not get stopPropagation.
@@ -202,18 +204,16 @@ function injectSvg() {
 
   // Clicking anything else in the SVG hides/restores that element group.
   // Series group clicks call stopPropagation so they never reach this handler.
-  if (svgEl) {
-    svgEl.addEventListener('click', e => {
-      const target = _findHideTarget(e.target, svgEl);
-      if (target) toggleHidden(target.getAttribute('id'));
-    });
-  }
+  svgEl.addEventListener('click', e => {
+    const target = _findHideTarget(e.target, svgEl);
+    if (target) toggleHidden(target.getAttribute('id'));
+  });
 
   renderHiddenList();
 }
 
 function _findById(root, id) {
-  return root.querySelector(`[id="${id.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`);
+  return root.querySelector(`[id="${_esc(id)}"]`);
 }
 
 // ── Element hiding ────────────────────────────────────────────────────────────
@@ -275,8 +275,7 @@ function _isHideableId(id) {
 
 function toggleHidden(id) {
   const container = document.getElementById('svg-container');
-  const escaped = id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const all = [...container.querySelectorAll(`[id="${escaped}"]`)];
+  const all = [...container.querySelectorAll(`[id="${_esc(id)}"]`)];
   const outsideRoots = all.filter(el => !CONFIG.chartRoots.map(r => r.rootId).some(r => {
     const root = _findById(container, r); return root && root.contains(el);
   }));
@@ -420,8 +419,8 @@ function _animOpts(selected) {
 }
 
 // HTML-escape for innerHTML interpolation. Named _escHtml (not _esc) because
-// detect.js / animate.js / export.js define a global _esc for CSS attribute
-// selectors — a same-named declaration here would silently overwrite theirs.
+// the global _esc (config.js) escapes ids for CSS attribute selectors —
+// a same-named declaration here would shadow it.
 function _escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

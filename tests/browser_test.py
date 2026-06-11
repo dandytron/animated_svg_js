@@ -37,20 +37,12 @@ def check(name, cond, detail=''):
     return ok
 
 
-# Load an example SVG through the app's own pipeline (same path as loadTestSvg,
-# minus the network fetch to Datawrapper).
+# Load an example SVG through the app's own pipeline — loadSvgString is the
+# shared tail of every real load path (Datawrapper fetch, file upload, paste).
 LOAD_EXAMPLE_JS = """
 async (path) => {
-  const resp = await fetch(path);
-  const svg  = await resp.text();
-  state.svg      = svg;
-  const svgEl    = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
-  state.elements = detectElements(svgEl);
-  state.queue    = [];
-  state.hidden   = new Set();
-  injectSvg();
-  renderQueue();
-  document.getElementById('queue-section').hidden = false;
+  const svg = await (await fetch(path)).text();
+  loadSvgString(svg);
   return state.elements.map(e => ({ id: e.group_id, label: e.label, type: e.animation_type }));
 }
 """

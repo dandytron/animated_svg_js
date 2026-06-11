@@ -250,7 +250,3 @@ function buildAnimatedSvg(svgEl, config) {
   injectHoverCss(defs);
   return clone;
 }
-
-function _esc(id) {
-  return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}

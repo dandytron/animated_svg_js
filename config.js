@@ -22,3 +22,11 @@ const CONFIG = {
     { rootId: 'area-fills-svg', select: 'root',                       defaultAnimation: 'fade_in'         },
   ],
 };
+
+// Escape backslashes and double-quotes in an id for use inside an [id="…"]
+// attribute selector. Datawrapper ids contain spaces, so CSS.escape/#id
+// selectors don't work. Defined once here (first script loaded) and shared
+// globally by detect.js, animate.js, export.js, and app.js.
+function _esc(id) {
+  return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}

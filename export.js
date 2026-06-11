@@ -7,9 +7,9 @@
 // timestamp. XMLSerializer then captures the correct values because they are
 // real DOM attributes, not animation-engine state.
 //
-// ffmpeg.wasm encodes GIF and ProRes MOV entirely in-browser.
-// All ffmpeg files are proxied through our Flask server (/ffmpeg-esm/, /ffmpeg-core/)
-// so every resource is same-origin — no blob URLs, no COEP conflicts.
+// ffmpeg.wasm encodes GIF and ProRes MOV entirely in-browser. Its files are
+// vendored in ffmpeg-esm/ and ffmpeg-core/ so every resource is same-origin —
+// no blob URLs, no COEP conflicts (details in _loadFfmpeg).
 
 'use strict';
 
@@ -404,8 +404,4 @@ function _download(blob, name) {
   const a   = document.createElement('a');
   a.href = url; a.download = name; a.click();
   URL.revokeObjectURL(url);
-}
-
-function _esc(id) {
-  return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

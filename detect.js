@@ -125,8 +125,3 @@ function _isWhite(color) {
          /^#f{3,6}$/i.test(color) ||
          /^#fff/i.test(color);
 }
-
-// Escape double-quotes inside an id for use in attribute selectors.
-function _esc(id) {
-  return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
