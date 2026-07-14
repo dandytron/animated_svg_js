@@ -6,3 +6,9 @@ __pycache__/
 fonts/
 *:Zone.Identifier
 .vercel
+
+# node deps (puppeteer-core install for hand exports)
+node_modules/
+# large / generated export artifacts — regenerate with scratch_folder/capture_frames.mjs
+*.mov
+scratch_folder/frames/
