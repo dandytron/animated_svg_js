@@ -80,8 +80,13 @@ function loadSvgString(svg) {
     return false;
   }
   clearInputError();
-  state.svg      = svg;
-  state.elements = detectElements(doc.documentElement);
+  // Stacked bars: bake synthesized row groups into the stored SVG so every
+  // downstream re-parse (preview, export) sees real row-N-svg nodes to bind to.
+  // Non-stacked charts are untouched — state.svg stays the exact original string.
+  const svgEl = doc.documentElement;
+  const rows  = synthesizeStackedRows(svgEl);
+  state.svg      = rows.length ? new XMLSerializer().serializeToString(svgEl) : svg;
+  state.elements = detectElements(svgEl);
   state.queue    = [];
   state.hidden   = new Set();
   injectSvg();
@@ -414,6 +419,7 @@ function _animOpts(selected) {
     ['fade_in',            'Fade In'],
     ['pop_in',             'Pop In'],
     ['grow_from_baseline', 'Grow from Baseline'],
+    ['wipe_right',         'Wipe Right'],
     ['radial_sweep',       'Radial Sweep'],
   ].map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`).join('');
 }

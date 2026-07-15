@@ -146,3 +146,12 @@ NTSC-1080p canvas, otherwise the chart renders as a corner thumbnail.
   ease-in-out — is easing a requirement or a preference?
 - **Axis line and legend:** reveal with the rows, fade independently, or stay
   static? One hand-tuned sample cannot establish the intended default.
+
+## Future work
+
+- **Manual chart-type selector (override for autodetection).** Rather than relying
+  solely on content-based autodetect — which is inherently fragile on a single
+  sample per type — let the user pick the chart type at upload time. Autodetect
+  stays as the default/fallback; the manual choice is an escape hatch when
+  detection is wrong or ambiguous. App-wide, not stacked-specific. Deferred;
+  autodetect only for now.

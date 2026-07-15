@@ -98,6 +98,313 @@ def test_detection_per_chart(page):
           any(e['label'] == 'Q1 2024' for e in els), str([e['label'] for e in els]))
 
 
+# ── Unit tests: stacked-bar helpers (detect.js) ───────────────────────────────
+# Synthetic, hand-built inputs — one function and one behaviour per assertion,
+# including edge cases the single-fixture integration tests don't reach. Runs in
+# the real browser DOM (the functions use querySelector/children/createElementNS),
+# so no jsdom dependency is introduced.
+
+# Parse a fragment into a live <svg> documentElement, in-page.
+_MK = "const mk = s => new DOMParser().parseFromString(s, 'image/svg+xml').documentElement;"
+
+
+def test_unit_translate_y(page):
+    r = page.evaluate("() => { %s" % _MK + """
+      const one = s => mk(`<svg xmlns='http://www.w3.org/2000/svg'><rect ${s}/></svg>`).querySelector('rect');
+      return {
+        comma:   _translateY(one("transform='translate(5, 30)'")),
+        space:   _translateY(one("transform='translate(5 30)'")),
+        noY:     _translateY(one("transform='translate(5)'")),
+        none:    _translateY(one("")),
+        negative:_translateY(one("transform='translate(5, -12.5)'")),
+      };
+    }""")
+    check('_translateY: comma-separated y', r['comma'] == 30, str(r))
+    check('_translateY: space-separated y', r['space'] == 30, str(r))
+    check('_translateY: x-only → 0', r['noY'] == 0, str(r))
+    check('_translateY: no transform → 0', r['none'] == 0, str(r))
+    check('_translateY: negative y', r['negative'] == -12.5, str(r))
+
+
+def test_unit_positive_direct_rects(page):
+    # 2 positive direct rects; a 0-width and a 0-height rect are dropped; a rect
+    # nested inside a <g> is NOT a direct child and must be ignored.
+    r = page.evaluate("() => { %s" % _MK + """
+      const chart = mk(`<svg xmlns='http://www.w3.org/2000/svg'><g id='chart-svg'>
+        <rect width='10' height='5'/>
+        <rect width='0'  height='5'/>
+        <rect width='10' height='0'/>
+        <rect width='7'  height='5'/>
+        <g><rect width='99' height='9'/></g>
+      </g></svg>`).querySelector('[id="chart-svg"]');
+      return _positiveDirectRects(chart).length;
+    }""")
+    check('_positiveDirectRects: drops 0-area + nested, keeps 2', r == 2, str(r))
+
+
+def test_unit_has_nested_chart_root(page):
+    r = page.evaluate("() => { %s" % _MK + """
+      const withRoot = mk(`<svg xmlns='http://www.w3.org/2000/svg'><g id='chart-svg'>
+        <g id='columns-svg'></g></g></svg>`).querySelector('[id="chart-svg"]');
+      const bare = mk(`<svg xmlns='http://www.w3.org/2000/svg'><g id='chart-svg'>
+        <rect width='5' height='5'/></g></svg>`).querySelector('[id="chart-svg"]');
+      return { withRoot: _hasNestedChartRoot(withRoot), bare: _hasNestedChartRoot(bare) };
+    }""")
+    check('_hasNestedChartRoot: true when a chartRoot nests', r['withRoot'] is True, str(r))
+    check('_hasNestedChartRoot: false when only rects', r['bare'] is False, str(r))
+
+
+def test_unit_is_stacked_bar_chart(page):
+    r = page.evaluate("() => { %s" % _MK + """
+      const q = svg => mk(svg).querySelector('[id="chart-svg"]');
+      const stacked = q(`<svg xmlns='http://www.w3.org/2000/svg'><g id='chart-svg'>
+        <rect width='10' height='5'/></g></svg>`);
+      const gated = q(`<svg xmlns='http://www.w3.org/2000/svg'><g id='chart-svg'>
+        <rect width='10' height='5'/><g id='lines-svg'></g></g></svg>`);
+      const empty = q(`<svg xmlns='http://www.w3.org/2000/svg'><g id='chart-svg'></g></svg>`);
+      return {
+        stacked: isStackedBarChart(stacked),
+        gated:   isStackedBarChart(gated),
+        empty:   isStackedBarChart(empty),
+        nul:     isStackedBarChart(null),
+      };
+    }""")
+    check('isStackedBarChart: rects + no root → true', r['stacked'] is True, str(r))
+    check('isStackedBarChart: clause-2 nested root → false', r['gated'] is False, str(r))
+    check('isStackedBarChart: no rects → false', r['empty'] is False, str(r))
+    check('isStackedBarChart: null-safe → false', r['nul'] is False, str(r))
+
+
+def test_unit_cluster_rows_by_y(page):
+    # Unordered input clusters into rows sorted top→bottom; near-equal y values
+    # (93.7 vs 94.1) round into one row.
+    r = page.evaluate("() => { %s" % _MK + """
+      const rects = [...mk(`<svg xmlns='http://www.w3.org/2000/svg'>
+        <rect transform='translate(1, 152)'/>
+        <rect transform='translate(1, 93.7)'/>
+        <rect transform='translate(1, 94.1)'/>
+        <rect transform='translate(1, 152.4)'/>
+        <rect transform='translate(1, 152)'/>
+      </svg>`).querySelectorAll('rect')];
+      return clusterRowsByY(rects).map(row => row.length);
+    }""")
+    check('clusterRowsByY: sorted top→bottom, rounded → [2, 3]', r == [2, 3], str(r))
+
+
+def test_unit_first_rect_fill(page):
+    r = page.evaluate("() => { %s" % _MK + """
+      const g = s => mk(`<svg xmlns='http://www.w3.org/2000/svg'><g>${s}</g></svg>`).querySelector('g');
+      return {
+        skipsWhite: _firstRectFill(g(`<rect style='fill: rgb(255,255,255)'/><rect style='fill: rgb(246,142,38)'/>`)),
+        fillAttr:   _firstRectFill(g(`<rect fill='rgb(1,2,3)'/>`)),
+        none:       _firstRectFill(g(`<rect/>`)),
+      };
+    }""")
+    check('_firstRectFill: skips white, returns first colour', r['skipsWhite'] == 'rgb(246,142,38)', str(r))
+    check('_firstRectFill: reads fill attribute too', r['fillAttr'] == 'rgb(1,2,3)', str(r))
+    check('_firstRectFill: no colour → empty string', r['none'] == '', str(r))
+
+
+# A synthetic stacked chart mirroring the real structure: legend text, a title
+# above each row, positive + one 0-width rect per row, and value labels dumped
+# after all rects. Row 1 = 3 rects (1 zero-width) + 2 labels; row 2 = 4 rects + 3.
+SYNTH_STACKED = """<svg xmlns='http://www.w3.org/2000/svg' width='600' height='240'>
+  <g id='chart-svg'>
+    <text transform='translate(14, 40)'>Legend A</text>
+    <text transform='translate(1, 73)'>Row One Title</text>
+    <rect width='100' height='27' transform='translate(1, 94)'/>
+    <rect width='0'   height='27' transform='translate(1, 94)'/>
+    <rect width='50'  height='27' transform='translate(101, 94)'/>
+    <line/>
+    <text transform='translate(1, 131)'>Row Two Title</text>
+    <rect width='80' height='27' transform='translate(1, 152)'/>
+    <rect width='60' height='27' transform='translate(81, 152)'/>
+    <rect width='40' height='27' transform='translate(141, 152)'/>
+    <rect width='30' height='27' transform='translate(181, 152)'/>
+    <text transform='translate(6, 98)'>v1</text>
+    <text transform='translate(110, 98)'>v2</text>
+    <text transform='translate(6, 157)'>w1</text>
+    <text transform='translate(90, 157)'>w2</text>
+    <text transform='translate(150, 157)'>w3</text>
+  </g>
+</svg>"""
+
+
+def test_unit_synthesize_label_association(page):
+    # The fragile bit: value labels join their row by band-containment, while the
+    # legend and BOTH row titles (y=73 between nothing, y=131 between the rows)
+    # must stay OUTSIDE every group.
+    r = page.evaluate("(svg) => { %s" % _MK + """
+      const root  = mk(svg);
+      const groups = synthesizeStackedRows(root);
+      const chart = root.querySelector('[id="chart-svg"]');
+      const g = groups.map(grp => {
+        const kids = [...grp.children];
+        return {
+          id: grp.getAttribute('id'),
+          rects: kids.filter(k => k.tagName.toLowerCase() === 'rect').length,
+          texts: kids.filter(k => k.tagName.toLowerCase() === 'text').map(t => t.textContent),
+        };
+      });
+      // Texts still directly under chart-svg (i.e. NOT pulled into a row group).
+      const looseTexts = [...chart.children]
+        .filter(c => c.tagName.toLowerCase() === 'text').map(t => t.textContent);
+      return { count: groups.length, g, looseTexts };
+    }""", SYNTH_STACKED)
+
+    check('synthesize: two row groups created', r['count'] == 2, str(r['count']))
+    g0, g1 = r['g']
+    check('synthesize: row 1 = 3 rects (incl 0-width) + labels [v1, v2]',
+          g0['rects'] == 3 and g0['texts'] == ['v1', 'v2'], str(g0))
+    check('synthesize: row 2 = 4 rects + labels [w1, w2, w3]',
+          g1['rects'] == 4 and g1['texts'] == ['w1', 'w2', 'w3'], str(g1))
+    check('synthesize: legend + both titles stay OUT of groups',
+          sorted(r['looseTexts']) == ['Legend A', 'Row One Title', 'Row Two Title'], str(r['looseTexts']))
+
+
+def test_unit_synthesize_gating_and_idempotency(page):
+    r = page.evaluate("(svg) => { %s" % _MK + """
+      // Non-stacked (nested columns-svg) → no-op.
+      const nonStacked = synthesizeStackedRows(mk(`<svg xmlns='http://www.w3.org/2000/svg'>
+        <g id='chart-svg'><rect width='9' height='9'/><g id='columns-svg'></g></g></svg>`)).length;
+      // No chart-svg at all → no-op.
+      const noChart = synthesizeStackedRows(mk(`<svg xmlns='http://www.w3.org/2000/svg'><g id='x'></g></svg>`)).length;
+      // Idempotent: second pass returns the existing 2 and does not double-wrap.
+      const root = mk(svg);
+      const first  = synthesizeStackedRows(root).length;
+      const second = synthesizeStackedRows(root).length;
+      const total  = root.querySelectorAll('[data-row-wipe]').length;
+      return { nonStacked, noChart, first, second, total };
+    }""", SYNTH_STACKED)
+    check('synthesize: non-stacked chart → no-op', r['nonStacked'] == 0, str(r))
+    check('synthesize: missing chart-svg → no-op', r['noChart'] == 0, str(r))
+    check('synthesize: idempotent (2 then 2, total 2)',
+          r['first'] == 2 and r['second'] == 2 and r['total'] == 2, str(r))
+
+
+def test_unit_detect_elements_row_labels(page):
+    # detectElements emits one wipe_right element per row with an explicit
+    # "Row N" label (NOT via _labelFromId, which would collapse both to "Row").
+    r = page.evaluate("(svg) => { %s" % _MK + """
+      const root = mk(svg);
+      synthesizeStackedRows(root);
+      return detectElements(root).map(e => ({ id: e.group_id, label: e.label, type: e.animation_type }));
+    }""", SYNTH_STACKED)
+    check('detectElements: 2 row elements', len(r) == 2, str(r))
+    check('detectElements: distinct "Row 1"/"Row 2" labels (not collapsed)',
+          [e['label'] for e in r] == ['Row 1', 'Row 2'], str([e['label'] for e in r]))
+    check('detectElements: both wipe_right', all(e['type'] == 'wipe_right' for e in r), str(r))
+
+
+# Content-based stacked horizontal bar detection (ADR 0006). These exercise the
+# pure predicate/clustering directly on a parsed chart-svg — row-group synthesis
+# and full detectElements wiring come in a later step.
+STACKED_DETECT_JS = """
+async (path) => {
+  const svg   = await (await fetch(path)).text();
+  const doc   = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  const chart = doc.querySelector('[id="chart-svg"]');
+  return {
+    hasChart: !!chart,
+    stacked:  isStackedBarChart(chart),
+    rows:     chart ? clusterRowsByY(_positiveDirectRects(chart)).map(r => r.length) : [],
+  };
+}
+"""
+
+
+def test_detection_stacked(page):
+    # The real Reuters/Ipsos survey: two rows of segments (3 + 4 positive-area
+    # rects; the 0-width 0% segment is dropped by the positive-area guard).
+    r = page.evaluate(STACKED_DETECT_JS, '/examples/stacked_bar_survey.svg')
+    check('stacked fixture: detected as stacked', r['stacked'], str(r))
+    check('stacked fixture: clusters into 2 rows of [3, 4]', r['rows'] == [3, 4], str(r['rows']))
+
+    # Clause 2 must exclude every existing chart type — including test.svg, which
+    # has a stray positive direct rect (clause 1 fires) but a nested lines-svg.
+    for path in ('/examples/area_graph_bv.svg', '/examples/bar_chart_iphone.svg',
+                 '/examples/multi_line_graph.svg', '/examples/scatter_plot.svg',
+                 '/examples/test.svg'):
+        r = page.evaluate(STACKED_DETECT_JS, path)
+        name = path.split('/')[-1]
+        check(f'{name}: NOT a false-positive stacked', r['stacked'] is False, str(r))
+
+
+# Row-group synthesis: load the stacked fixture through the real loadSvgString
+# pipeline and inspect the baked state (state.svg + state.elements).
+STACKED_SYNTH_JS = """
+async (path) => {
+  const svg = await (await fetch(path)).text();
+  loadSvgString(svg);
+
+  const doc   = new DOMParser().parseFromString(state.svg, 'image/svg+xml');
+  const groups = [...doc.querySelectorAll('[data-row-wipe]')].map(g => {
+    const kids  = [...g.children];
+    const rects = kids.filter(k => k.tagName.toLowerCase() === 'rect');
+    const texts = kids.filter(k => k.tagName.toLowerCase() === 'text');
+    const lastRectIdx = kids.map(k => k.tagName.toLowerCase()).lastIndexOf('rect');
+    const firstTextIdx = kids.map(k => k.tagName.toLowerCase()).indexOf('text');
+    return {
+      id: g.getAttribute('id'),
+      rects: rects.length,
+      texts: texts.length,
+      labelsAfterRects: firstTextIdx === -1 || firstTextIdx > lastRectIdx,
+    };
+  });
+
+  // Idempotency: a second synthesis pass on a fresh parse must not double-wrap.
+  const doc2 = new DOMParser().parseFromString(state.svg, 'image/svg+xml');
+  const again = synthesizeStackedRows(doc2.documentElement);
+
+  return {
+    elements: state.elements.map(e => ({ id: e.group_id, label: e.label, type: e.animation_type, color: e.color })),
+    baked: state.svg.includes('id=\\"row-1-svg\\"') && state.svg.includes('id=\\"row-2-svg\\"'),
+    groups,
+    idempotentCount: again.length,
+    idempotentGroups: doc2.querySelectorAll('[data-row-wipe]').length,
+  };
+}
+"""
+
+
+def test_synthesis_stacked(page):
+    r = page.evaluate(STACKED_SYNTH_JS, '/examples/stacked_bar_survey.svg')
+
+    els = r['elements']
+    check('synthesis: 2 row elements emitted', len(els) == 2, str(els))
+    check('synthesis: labels are "Row 1" / "Row 2"',
+          [e['label'] for e in els] == ['Row 1', 'Row 2'], str([e['label'] for e in els]))
+    check('synthesis: type is wipe_right', all(e['type'] == 'wipe_right' for e in els), str(els))
+    check('synthesis: rows get a real colour swatch', all(e['color'] for e in els), str([e['color'] for e in els]))
+
+    check('synthesis: row-N-svg baked into state.svg', r['baked'], str(r['baked']))
+
+    g = {x['id']: x for x in r['groups']}
+    check('synthesis: row-1-svg has 4 rects + 2 labels',
+          g.get('row-1-svg', {}).get('rects') == 4 and g['row-1-svg']['texts'] == 2, str(g.get('row-1-svg')))
+    check('synthesis: row-2-svg has 4 rects + 3 labels',
+          g.get('row-2-svg', {}).get('rects') == 4 and g['row-2-svg']['texts'] == 3, str(g.get('row-2-svg')))
+    check('synthesis: labels sit after rects (z-order)',
+          all(x['labelsAfterRects'] for x in r['groups']), str(r['groups']))
+
+    check('synthesis: idempotent — returns existing 2, no double-wrap',
+          r['idempotentCount'] == 2 and r['idempotentGroups'] == 2, str(r))
+
+
+# Non-stacked charts must pass through synthesis untouched: state.svg stays the
+# exact original string and no row groups are injected.
+def test_synthesis_leaves_others_untouched(page):
+    r = page.evaluate("""
+      async (path) => {
+        const svg = await (await fetch(path)).text();
+        loadSvgString(svg);
+        return { unchanged: state.svg === svg, hasRows: state.svg.includes('data-row-wipe') };
+      }
+    """, '/examples/multi_line_graph.svg')
+    check('synthesis: non-stacked state.svg is byte-identical original', r['unchanged'], str(r))
+    check('synthesis: non-stacked gets no row groups', r['hasRows'] is False, str(r))
+
+
 def test_queue_all(page):
     page.evaluate(LOAD_EXAMPLE_JS, '/examples/bar_chart_iphone.svg')
     page.click('#queue-all-btn')
@@ -366,6 +673,18 @@ def main():
         for test in (
             test_load_and_detection,
             test_detection_per_chart,
+            test_unit_translate_y,
+            test_unit_positive_direct_rects,
+            test_unit_has_nested_chart_root,
+            test_unit_is_stacked_bar_chart,
+            test_unit_cluster_rows_by_y,
+            test_unit_first_rect_fill,
+            test_unit_synthesize_label_association,
+            test_unit_synthesize_gating_and_idempotency,
+            test_unit_detect_elements_row_labels,
+            test_detection_stacked,
+            test_synthesis_stacked,
+            test_synthesis_leaves_others_untouched,
             test_queue_all,
             test_title_footer_hiding,
             test_preview,
