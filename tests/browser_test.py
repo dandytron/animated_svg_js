@@ -296,6 +296,99 @@ def test_unit_detect_elements_row_labels(page):
     check('detectElements: both wipe_right', all(e['type'] == 'wipe_right' for e in r), str(r))
 
 
+# ── Unit tests: wipe geometry + injection (animate.js) ─────────────────────────
+# Synthetic single-row groups exercise the wipe's measuring path in isolation,
+# including the edge cases that separate it from a naive whole-chart clip.
+
+def test_unit_wipe_geometry(page):
+    r = page.evaluate("() => { %s" % _MK + """
+      const g = rects => mk(`<svg xmlns='http://www.w3.org/2000/svg'><g>${rects}</g></svg>`).querySelector('g');
+
+      // 1. Partial-width row: two segments spanning x 1→300 (NOT full plot width).
+      //    Wipe must measure the row itself → w≈299, x=1 — never the whole chart.
+      const partial = _wipeGeometry(g(`
+        <rect width='150' height='27' transform='translate(1, 94)'/>
+        <rect width='149' height='27' transform='translate(151, 94)'/>`));
+
+      // 2. Trailing 0%-segment parked far right (x=400). The positive-area guard
+      //    must drop it, so width stops at the last REAL segment (~100), not ~399.
+      const zeroSeg = _wipeGeometry(g(`
+        <rect width='100' height='27' transform='translate(1, 94)'/>
+        <rect width='0'   height='27' transform='translate(400, 94)'/>`));
+
+      // 3. Indented row: leftmost segment starts at x=50. Clip must start there.
+      const indented = _wipeGeometry(g(`
+        <rect width='80' height='27' transform='translate(50, 94)'/>
+        <rect width='70' height='27' transform='translate(130, 94)'/>`));
+
+      // 4. No rects → null (caller falls back to a whole-chart wipe).
+      const noRects = _wipeGeometry(g(`<text>hi</text><line/>`));
+
+      return { partial, zeroSeg, indented, noRects };
+    }""")
+    near = lambda a, b, tol=0.5: abs(a - b) <= tol
+
+    check('wipe geo: partial-width row measures ITS OWN width (~299, not ~598)',
+          near(r['partial']['w'], 299) and near(r['partial']['x'], 1), str(r['partial']))
+    check('wipe geo: vertical antialias pad — y = top−2 (92), h = height+4 (31)',
+          near(r['partial']['y'], 92) and near(r['partial']['h'], 31), str(r['partial']))
+    check('wipe geo: trailing 0%-segment ignored — width stops at last real segment (~100)',
+          near(r['zeroSeg']['w'], 100), str(r['zeroSeg']))
+    check('wipe geo: indented row starts at its own left edge (x=50, w=150)',
+          near(r['indented']['x'], 50) and near(r['indented']['w'], 150), str(r['indented']))
+    check('wipe geo: group with no rects → null', r['noRects'] is None, str(r['noRects']))
+
+
+def test_unit_wipe_inject(page):
+    r = page.evaluate("() => { %s" % _MK + """
+      const build = inner => {
+        const svg  = mk(`<svg xmlns='http://www.w3.org/2000/svg'><defs></defs>${inner}</svg>`);
+        return { svg, defs: svg.querySelector('defs') };
+      };
+      const readClip = (svg, id) => {
+        const rect = svg.querySelector(`#${id} rect`);
+        const anim = svg.querySelector(`#${id} animate`);
+        return {
+          x: +rect.getAttribute('x'), y: +rect.getAttribute('y'),
+          w0: +rect.getAttribute('width'), h: +rect.getAttribute('height'),
+          anim: { attr: anim.getAttribute('attributeName'),
+                  from: +anim.getAttribute('from'), to: +anim.getAttribute('to'),
+                  begin: anim.getAttribute('begin'), dur: anim.getAttribute('dur'),
+                  fill: anim.getAttribute('fill') },
+        };
+      };
+
+      // Normal: a measurable row group.
+      const a = build(`<g id='row-1-svg'>
+        <rect width='150' height='27' transform='translate(1, 94)'/>
+        <rect width='149' height='27' transform='translate(151, 94)'/></g>`);
+      const group = a.svg.querySelector('[id="row-1-svg"]');
+      injectWipeRight(a.defs, 'clip-0', group, '1.5s', '2s', { x: 0, y: -60, w: 1290, h: 460 });
+      const normal = readClip(a.svg, 'clip-0');
+      normal.clipPath = group.getAttribute('clip-path');
+
+      // Fallback: a group with no rects → whole-chart wipe from the passed bounds.
+      const b = build(`<g id='blank'><text>x</text></g>`);
+      const blank = b.svg.querySelector('[id="blank"]');
+      injectWipeRight(b.defs, 'clip-1', blank, '0s', '2s', { x: 0, y: -60, w: 1290, h: 460 });
+      const fallback = readClip(b.svg, 'clip-1');
+      fallback.clipPath = blank.getAttribute('clip-path');
+
+      return { normal, fallback };
+    }""")
+    near = lambda a, b, tol=0.5: abs(a - b) <= tol
+    n, f = r['normal'], r['fallback']
+
+    check('wipe inject: clip rect starts at width 0, animates width 0 → row width (~299)',
+          n['w0'] == 0 and n['anim']['attr'] == 'width' and n['anim']['from'] == 0 and near(n['anim']['to'], 299),
+          str(n))
+    check('wipe inject: begin/dur passed through, holds final value (fill=freeze)',
+          n['anim']['begin'] == '1.5s' and n['anim']['dur'] == '2s' and n['anim']['fill'] == 'freeze', str(n))
+    check('wipe inject: group receives its clip-path', n['clipPath'] == 'url(#clip-0)', str(n))
+    check('wipe inject: no-rects group falls back to whole-chart wipe (width 0 → bounds.w 1290)',
+          near(f['anim']['to'], 1290) and near(f['h'], 460) and f['clipPath'] == 'url(#clip-1)', str(f))
+
+
 # Content-based stacked horizontal bar detection (ADR 0006). These exercise the
 # pure predicate/clustering directly on a parsed chart-svg — row-group synthesis
 # and full detectElements wiring come in a later step.
@@ -560,6 +653,91 @@ def test_bar_export_clip_geometry(page):
           end[0]['w'] >= 47.4 and end[0]['w'] <= 60, json.dumps(end[0]))
 
 
+# ── Unit tests: wipe export (export.js per-frame) ─────────────────────────────
+# Synthetic rows driven through _setupExportClips + _applyAtTime directly. A
+# partial-width row (spans x 1→300, w≈299) proves the export reveals to the row's
+# OWN width, not the whole chart; a start_time offset checks progress alignment.
+def test_unit_wipe_export(page):
+    out = page.evaluate("""
+      () => {
+        const svgEl = new DOMParser().parseFromString(`
+          <svg xmlns='http://www.w3.org/2000/svg' width='600' height='240'>
+            <g id='row-1-svg'>
+              <rect width='150' height='27' transform='translate(1, 94)'/>
+              <rect width='149' height='27' transform='translate(151, 94)'/>
+            </g>
+            <g id='blank'><text>x</text></g>
+          </svg>`, 'image/svg+xml').documentElement;
+        document.body.appendChild(svgEl);
+
+        const config = { elements: [
+          // Row starting at t=1 so we can check progress alignment off zero.
+          { group_id: 'row-1-svg', animation_type: 'wipe_right', start_time: 1, element_duration: 2 },
+          // No-rects group → fallback to whole-chart wipe.
+          { group_id: 'blank',     animation_type: 'wipe_right', start_time: 0, element_duration: 2 },
+        ]};
+        const bounds = _clipBounds(svgEl);          // no viewBox → {x:0,y:-60,w:600,h:300}
+        _setupExportClips(svgEl, config, bounds);
+
+        const wOf = i => +svgEl.querySelector(`#ecl-${i} rect`).getAttribute('width');
+        const dataW = i => +svgEl.querySelector(`#ecl-${i} rect`).getAttribute('data-w');
+        const at = t => { _applyAtTime(svgEl, config, bounds, t); return { row: wOf(0), blank: wOf(1) }; };
+
+        const result = {
+          dataW_row: dataW(0), dataW_blank: dataW(1), boundsW: bounds.w,
+          before: at(0.5),   // row not started yet (start_time=1)
+          start:  at(1),     // p=0
+          mid:    at(2),     // p=0.5
+          end:    at(3),     // p=1
+          after:  at(5),     // clamped at p=1
+        };
+        svgEl.remove();
+        return result;
+      }
+    """)
+    near = lambda a, b, tol=1.0: abs(a - b) <= tol
+
+    check('wipe export: data-w stashed = row width (~299), not re-measured per frame',
+          near(out['dataW_row'], 299), json.dumps(out))
+    check('wipe export: no-rects fallback stashes whole-chart width (data-w = bounds.w)',
+          near(out['dataW_blank'], out['boundsW']), json.dumps(out))
+    check('wipe export: width is 0 before start_time (t=0.5, start=1)',
+          out['before']['row'] == 0, json.dumps(out['before']))
+    check('wipe export: progress clamps — 0 at start, ~half at mid, full (~299) at end',
+          out['start']['row'] == 0 and near(out['mid']['row'], 149.5) and near(out['end']['row'], 299),
+          json.dumps({'start': out['start'], 'mid': out['mid'], 'end': out['end']}))
+    check('wipe export: width stays clamped at full past the end (no overshoot)',
+          near(out['after']['row'], 299), json.dumps(out['after']))
+    check('wipe export: fallback row reveals to whole-chart width at end',
+          near(out['end']['blank'], out['boundsW']), json.dumps(out['end']))
+
+
+# End-to-end: capture real frames of the stacked fixture and prove they actually
+# CHANGE over time. If the wipe were a no-op, XMLSerializer would emit identical
+# frozen frame-zero SVGs and every PNG would be byte-identical — the exact
+# failure mode ADR 0003 exists to prevent.
+def test_wipe_capture_animates(page):
+    out = page.evaluate("""
+      async () => {
+        const svg = await (await fetch('/examples/stacked_bar_survey.svg')).text();
+        loadSvgString(svg);                          // bakes row-N-svg into state.svg
+        const config = { elements: [
+          { group_id: 'row-1-svg', animation_type: 'wipe_right', start_time: 0, element_duration: 1 },
+          { group_id: 'row-2-svg', animation_type: 'wipe_right', start_time: 1, element_duration: 1 },
+        ]};
+        const { frames } = await captureFrames(state.svg, config, 2, null, { fps: 5 });
+        const sizes = await Promise.all(frames.map(async b => (await b.arrayBuffer()).byteLength));
+        const first = new Uint8Array(await frames[0].arrayBuffer());
+        const last  = new Uint8Array(await frames[frames.length - 1].arrayBuffer());
+        const identical = first.length === last.length && first.every((v, k) => v === last[k]);
+        return { n: frames.length, distinctSizes: new Set(sizes).size, identicalFirstLast: identical };
+      }
+    """)
+    check('wipe capture: produced 10 frames (2s × 5fps)', out['n'] == 10, json.dumps(out))
+    check('wipe capture: frames change over time (not frozen frame-zero)',
+          out['distinctSizes'] > 1 and out['identicalFirstLast'] is False, json.dumps(out))
+
+
 def test_bar_preview_smil_geometry(page):
     out = page.evaluate("""
       async ([q1, q2]) => {
@@ -601,6 +779,47 @@ def test_bar_preview_smil_geometry(page):
     check('Bar preview: negative bar height animates 0 → bar height, y fixed at baseline',
           neg_h and near(neg_h['to'], 78.4) and neg_y is None and near(neg['y0'], BASELINE),
           json.dumps(neg))
+
+
+def test_wipe_preview_smil_geometry(page):
+    # Stacked-row wipe (ADR 0006): a per-row clip rect spanning the row height,
+    # animating WIDTH 0 → full row width. Both rows are 100%-stacked so each
+    # spans the full plot width (~598); height is row height (27) + 2×2px pad.
+    out = page.evaluate("""
+      async () => {
+        const svg   = await (await fetch('/examples/stacked_bar_survey.svg')).text();
+        const svgEl = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+        synthesizeStackedRows(svgEl);
+        const config = { elements: [
+          { group_id: 'row-1-svg', animation_type: 'wipe_right', start_time: 0, element_duration: 2 },
+          { group_id: 'row-2-svg', animation_type: 'wipe_right', start_time: 0, element_duration: 2 },
+        ]};
+        const animated = buildAnimatedSvg(svgEl, config);
+        const read = (i, id) => {
+          const rect = animated.querySelector(`#clip-${i} rect`);
+          const w = [...animated.querySelectorAll(`#clip-${i} animate`)]
+            .find(a => a.getAttribute('attributeName') === 'width');
+          return {
+            x: +rect.getAttribute('x'), y: +rect.getAttribute('y'),
+            h: +rect.getAttribute('height'), w0: +rect.getAttribute('width'),
+            anim: w ? { attr: 'width', from: +w.getAttribute('from'), to: +w.getAttribute('to') } : null,
+            clipped: animated.querySelector(`[id="${id}"]`).getAttribute('clip-path') === `url(#clip-${i})`,
+          };
+        };
+        return [read(0, 'row-1-svg'), read(1, 'row-2-svg')];
+      }
+    """)
+    near = lambda a, b, tol=1.0: abs(a - b) <= tol
+    r1, r2 = out
+    check('Wipe preview: both rows clipped to their own clip path',
+          r1['clipped'] and r2['clipped'], json.dumps(out))
+    check('Wipe preview: clip starts at width 0, grows to full row width (~598)',
+          r1['w0'] == 0 and r1['anim'] and r1['anim']['from'] == 0 and near(r1['anim']['to'], 598, 2)
+          and r2['anim'] and near(r2['anim']['to'], 598, 2), json.dumps(out))
+    check('Wipe preview: clip height = row height + 2px pad each side (≈31)',
+          near(r1['h'], 31) and near(r2['h'], 31), json.dumps(out))
+    check('Wipe preview: clip y is row top − 2px pad (row1 ≈91.7, row2 ≈150.5)',
+          near(r1['y'], 91.67) and near(r2['y'], 150.47), json.dumps(out))
 
 
 def test_capture_frames(page):
@@ -682,6 +901,9 @@ def main():
             test_unit_synthesize_label_association,
             test_unit_synthesize_gating_and_idempotency,
             test_unit_detect_elements_row_labels,
+            test_unit_wipe_geometry,
+            test_unit_wipe_inject,
+            test_unit_wipe_export,
             test_detection_stacked,
             test_synthesis_stacked,
             test_synthesis_leaves_others_untouched,
@@ -692,6 +914,8 @@ def main():
             test_animated_svg_export_structure,
             test_bar_export_clip_geometry,
             test_bar_preview_smil_geometry,
+            test_wipe_preview_smil_geometry,
+            test_wipe_capture_animates,
             test_capture_frames,
             test_transparent_capture,
             test_background_rect_detection,

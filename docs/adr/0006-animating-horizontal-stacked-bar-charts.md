@@ -149,6 +149,14 @@ NTSC-1080p canvas, otherwise the chart renders as a corner thumbnail.
 
 ## Future work
 
+- **Per-segment wipe mode (vs. per-row single-unit wipe).** The v1 wipe reveals
+  each row as ONE unit — a single clip growing across all of that row's segments
+  together. Consider offering an alternative granularity where each segment
+  (sub-rect) wipes left-to-right on its own — either staggered in sequence
+  (segment 1, then 2, then 3…) or each with its own clip. Would be a per-element
+  option (`{row | segment}`), analogous to the per-letter/per-word toggle in
+  ADR 0007. Raised while reviewing the v1 preview.
+
 - **Manual chart-type selector (override for autodetection).** Rather than relying
   solely on content-based autodetect — which is inherently fragile on a single
   sample per type — let the user pick the chart type at upload time. Autodetect

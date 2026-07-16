@@ -159,6 +159,19 @@ function _growGeometry(group) {
   return { x: b.x - pad, w: b.w + pad * 2, h: b.h, top: b.y, bottom: b.y + b.h, down };
 }
 
+// Geometry for one stacked row's left-to-right wipe. Mirrors _growGeometry's
+// element-measuring path (_rectUnionBounds + antialias pad), but the growth axis
+// is WIDTH, not height — so the pad goes on the fixed (vertical) axis. A
+// 100%-stacked row has no zero line; its "baseline" is simply the left edge, so
+// there is no baseline detection here. Returns null when the group has no rects
+// (caller falls back to a whole-chart wipe). See ADR 0006 §2.
+function _wipeGeometry(group) {
+  const b = _rectUnionBounds(group);
+  if (!b) return null;
+  const pad = 2; // antialias headroom so row top/bottom edges are never shaved
+  return { x: b.x, y: b.y - pad, w: b.w, h: b.h + pad * 2 };
+}
+
 function injectGrowFromBaseline(defs, clipId, group, begin, dur, bounds) {
   const geo  = _growGeometry(group);
   const clip = _el('clipPath');
@@ -188,6 +201,35 @@ function injectGrowFromBaseline(defs, clipId, group, begin, dur, bounds) {
     rect.setAttribute('height', '0');
     _animate(rect, 'height', 0,                   bounds.h, dur, begin);
     _animate(rect, 'y',      bounds.y + bounds.h, bounds.y, dur, begin);
+  }
+  clip.appendChild(rect);
+  defs.appendChild(clip);
+  group.setAttribute('clip-path', `url(#${clipId})`);
+}
+
+// Stacked-row wipe: a clip rect spanning the row's height, growing in WIDTH
+// 0→full so the whole stack fills left-to-right as one unit with segment
+// boundaries fixed (segments are pinned by absolute translate-x; animating their
+// widths directly would leave right-hand segments floating over gaps). Modeled
+// on injectGrowFromBaseline with the axis swapped. See ADR 0006 §2.
+function injectWipeRight(defs, clipId, group, begin, dur, bounds) {
+  const geo  = _wipeGeometry(group);
+  const clip = _el('clipPath');
+  clip.setAttribute('id', clipId);
+  const rect = _el('rect');
+  if (geo) {
+    rect.setAttribute('x',      geo.x);
+    rect.setAttribute('y',      geo.y);
+    rect.setAttribute('width',  '0');
+    rect.setAttribute('height', geo.h);
+    _animate(rect, 'width', 0, geo.w, dur, begin);
+  } else {
+    // No rects to measure — whole-chart wipe from the left edge (like draw_on).
+    rect.setAttribute('x',      bounds.x);
+    rect.setAttribute('y',      bounds.y);
+    rect.setAttribute('width',  '0');
+    rect.setAttribute('height', bounds.h);
+    _animate(rect, 'width', 0, bounds.w, dur, begin);
   }
   clip.appendChild(rect);
   defs.appendChild(clip);
@@ -240,6 +282,9 @@ function buildAnimatedSvg(svgEl, config) {
         break;
       case 'grow_from_baseline':
         injectGrowFromBaseline(defs, clipId, group, begin, dur, bounds);
+        break;
+      case 'wipe_right':
+        injectWipeRight(defs, clipId, group, begin, dur, bounds);
         break;
       case 'radial_sweep':
         console.warn(`Radial Sweep not yet implemented — skipping "${elem.group_id}"`);

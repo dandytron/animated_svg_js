@@ -41,7 +41,8 @@ function _setupExportClips(svgEl, config, bounds) {
       return;
     }
 
-    if (elem.animation_type === 'draw_on' || elem.animation_type === 'grow_from_baseline') {
+    if (elem.animation_type === 'draw_on' || elem.animation_type === 'grow_from_baseline'
+        || elem.animation_type === 'wipe_right') {
       const clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
       clip.setAttribute('id', `ecl-${i}`);
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -50,7 +51,7 @@ function _setupExportClips(svgEl, config, bounds) {
         rect.setAttribute('y',      bounds.y);
         rect.setAttribute('width',  '0');
         rect.setAttribute('height', bounds.h);
-      } else {
+      } else if (elem.animation_type === 'grow_from_baseline') {
         // grow_from_baseline: per-bar clip anchored at the chart's zero line
         // (see _growGeometry in animate.js). Geometry is stored as data-*
         // attributes so _applyAtTime can drive it without re-measuring.
@@ -63,6 +64,17 @@ function _setupExportClips(svgEl, config, bounds) {
         rect.setAttribute('data-top',  geo.top);
         rect.setAttribute('data-h',    geo.h);
         rect.setAttribute('data-down', geo.down ? '1' : '0');
+      } else {
+        // wipe_right: per-row clip spanning the row height, width driven 0→full
+        // (see _wipeGeometry in animate.js). Full width stored as data-w so
+        // _applyAtTime drives it without re-measuring the row each frame.
+        const geo = _wipeGeometry(group) ??
+          { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h };
+        rect.setAttribute('x',      geo.x);
+        rect.setAttribute('y',      geo.y);
+        rect.setAttribute('width',  '0');
+        rect.setAttribute('height', geo.h);
+        rect.setAttribute('data-w', geo.w);
       }
       clip.appendChild(rect);
       defs.appendChild(clip);
@@ -108,6 +120,13 @@ function _applyAtTime(svgEl, config, bounds, t) {
           // pinned at the zero line. Negative bars: top edge stays pinned.
           if (rect.getAttribute('data-down') !== '1') rect.setAttribute('y', top + full - h);
         }
+        break;
+      }
+      case 'wipe_right': {
+        // Row wipe: grow the clip width left-to-right; x/y/height are fixed, so
+        // the reveal fills the row as one unit with segment boundaries pinned.
+        const rect = svgEl.querySelector(`#ecl-${i} rect`);
+        if (rect) rect.setAttribute('width', p * parseFloat(rect.getAttribute('data-w')));
         break;
       }
     }
