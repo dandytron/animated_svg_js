@@ -1,7 +1,10 @@
 # Line-chart cinematic treatment — integration checklist
 
 **Date:** 2026-07-20
-**Status:** pilot complete, nothing ported yet
+**Status (updated 2026-07-24):** **§0–§5 ported** to the tool on branch
+`feat/line-cinematic-port` (suite 173/173, both animation systems). **§6 (export
+presets) and §7 (9:16 vertical) are still outstanding.** See "Port status" and
+"Open questions & follow-ups" at the foot before picking this up again.
 
 A hand-animation pilot (two real Datawrapper line charts: China oil imports,
 U.S. SPR) built a full cinematic treatment outside the tool: header bubble-up →
@@ -10,9 +13,10 @@ pulling back, with anchored scrolling axes, then ProRes 4444 export at 16:9 and
 9:16.
 
 Everything below is **working** in `scratch_folder/` (`pilot_pages.py` and its
-modules) and verified live. None of it is in `animate.js` / `export.js` yet.
-This is the list to work through together. Each item ties to a real prototype
-file and, where relevant, to the existing ADR 0008 roadmap number.
+modules) and verified live. Each item ties to a real prototype file and, where
+relevant, to the existing ADR 0008 roadmap number. The unticked boxes below are
+preserved as the **original pilot spec**; what actually shipped is recorded in
+"Port status" at the foot.
 
 Cross-cutting rule (ADR 0003): every animation lands in **both** `animate.js`
 (SMIL preview) and `export.js` (per-frame attribute writes). Everything here was
@@ -165,3 +169,100 @@ verified to survive frame-capture export — the ProRes came out of exactly this
 | `export_prores.py` | frame capture → ProRes 4444 |
 
 Preview (password-gated): https://svg-draft-previews.vercel.app/line-paint-on
+
+---
+
+# Port status (2026-07-24)
+
+Branch `feat/line-cinematic-port`. Suite 173/173. Every animation landed in
+**both** systems (ADR 0003). New functions are idempotent by construction (pure,
+read-only, or guarded), and the camera lives in its own module driven by a
+separate `config.camera` block kept out of the per-element animation switch.
+
+| § | Status | Shipped as |
+|---|--------|-----------|
+| §0 font-first | ✅ | `fonts.js::embedFonts` — inlines the real `@font-face` as data-URIs at the head of **every build path** (preview / capture / SVG export), not at load, so `state.svg` stays byte-identical |
+| §1 trace | ✅ | `animate.js::injectTrace` + export twin (`pathLength="1"`, dashoffset 1→0) |
+| §1 dots-as-line | ✅ | `detect.js::_dotsFormLine` (median dot-spacing, **not** a count) → `wipe_right`; `animate.js::_dotsWipeGeometry` for a tight wipe |
+| §2 split-draw | ✅ | `camera.js::injectSplitTrace` / `setupSplitTrace` / `applySplitTraceAtTime`, driven from `plan.split` |
+| §3 camera | ✅ | `camera.js`: `buildCameraPlan` (pure) → `injectCameraSMIL` + `setupCamera`/`applyCameraAtTime` (export twin, cubic-bezier keySplines interpolation) |
+| §4 anchored axes | ✅ | folded into the camera plan/inject (label tracks, overhang fade, non-scaling gridlines, gutter trim) |
+| §5 bubble-up | ✅ | `animate.js::measureBubbleUnits` (live-probe glyph measure in the real font) + `_splitBubbleRuns` / `injectBubbleUp` + export twin |
+| §6 export presets | ❌ | not started |
+| §7 9:16 vertical | ❌ | not started |
+
+Extraction was validated against the real China chart: it reproduces the pilot's
+hand-fed geometry almost exactly (stage within 0.4px of `CHINA_STAGE`, plot
+offset exact, ticks parsed with the month+year split, drop lands on the real
+slump).
+
+---
+
+# Open questions & follow-ups
+
+Carried out of the §0–§5 port. Nothing here blocks the shipped work.
+
+## Deferred by decision
+
+- **Easing is inconsistent across animations.** The camera and split-draw use
+  real `keySplines`; **bubble-up is deliberately linear**, and the older
+  `wipe_right` / `grow_from_baseline` / `fade_in` / `draw_on` / `trace` are all
+  linear. Linear was chosen to keep preview/export parity trivial. The dedicated
+  easing pass (spline support in `_animate` + the matching curve in
+  `_applyAtTime`) is still the separate task from the earlier save-point — doing
+  it should sweep **all** animations at once so the tool reads consistently.
+  `camera.js::_bezierEase` / `_sampleTrack` already exist and can be reused.
+- **`detectStage` is a first-cut heuristic** (svg-main-svg root bbox + 8px pad,
+  full canvas width). Accurate on the pilot charts, but the user's call was
+  "build auto-extraction now, **harden later**". Overridable via
+  `config.camera.stage`.
+
+## Single-sample risk (the likeliest place to break)
+
+- Camera extraction is validated on **two** chart families only (China line,
+  `multi_line_graph`). Wants a third/fourth real Datawrapper line chart —
+  especially one with a different axis density or a nested plot transform.
+- **`extractDotPoints` is unit-tested but never driven end-to-end through the
+  camera.** A dots-rendered line (SPR) should in principle drive the camera the
+  same way a path line does; that path is untried.
+- `findDrop`'s `window = 60` look-ahead is the pilot's constant, unexamined
+  against series much longer or shorter than ~28 points.
+
+## Conflicts / guards not yet enforced
+
+- **`camera.split_draw` and a queued `trace` on the same line both animate that
+  path.** Today this is convention-only ("split_draw owns the line's draw"); it
+  is not guarded in code. Either detect the collision and drop one, or surface
+  it in the UI.
+- **Hiding the header is no longer reachable by click.** Per the 2026-07-23 UX
+  decision the header is an animatable element, so clicking it queues it for
+  bubble-up. The footer is still click-to-hide. If someone wants a chart with no
+  header at all, there is currently no affordance — needs a separate control.
+
+## Not exposed in the UI (config-only)
+
+- `bubble_mode: 'letter' | 'word'` — the per-word toggle ADR 0007 asks for is
+  implemented and tested but has no control; defaults to per-letter.
+- Camera tuning: `tight`, `keytimes`, `splines`, `stage`, `line_id` are all
+  honoured by `config.camera` but only `enabled` / `split_draw` / `duration`
+  have UI.
+
+## Still open from ADR 0007
+
+Unchanged by this port — per-letter vs per-word default for long subtitles,
+which params to expose, RTL direction, and generic title/subtitle detection
+inside Datawrapper's header container.
+
+## Repo hygiene / deployment
+
+- **`.gitignore` has an uncommitted font-licensing hardening** (widens the
+  ignore rules so pilot outputs carrying inlined Knowledge `.woff` bytes can't
+  reach this public repo). Unrelated to the port, but worth committing — without
+  it a new hand-animation output under an unmatched name would be tracked.
+- **`fonts/` is gitignored and untracked** (licensed face), so `embedFonts`
+  fetches at runtime and **gracefully no-ops wherever the fonts aren't present**
+  (fresh clone, CI, public deploy) — text falls back rather than breaking. The
+  real face only renders where `fonts/` exists on disk.
+- ADR 0002 carries uncommitted 2026-07-20 notes covering the §6 findings (NTSC
+  default, short-edge vertical widths, round-duration overshoot). Pick those up
+  with §6 rather than re-deriving them.
