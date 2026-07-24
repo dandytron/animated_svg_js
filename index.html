@@ -468,6 +468,10 @@
             <label class="total-dur-label">
               Total duration: <input type="number" id="total-duration" value="8" min="1" step="0.5"> s
             </label>
+            <label class="camera-toggle-label" title="Push in on the steepest fall and pull back to hold it, with anchored scrolling axes">
+              <input type="checkbox" id="camera-toggle"> Camera
+              <input type="checkbox" id="camera-split-toggle"> split-draw
+            </label>
             <button id="queue-all-btn" disabled>Queue all</button>
             <button id="preview-btn">Preview</button>
             <div class="export-wrap">
@@ -517,8 +521,10 @@
     Each file adds functions to the global scope; app.js calls them all.
   -->
   <script src="config.js"></script>
+  <script src="fonts.js"></script>
   <script src="detect.js"></script>
   <script src="animate.js"></script>
+  <script src="camera.js"></script>
   <script src="export.js"></script>
   <script src="app.js"></script>
 </body>

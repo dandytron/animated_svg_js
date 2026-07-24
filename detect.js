@@ -16,9 +16,12 @@ function detectAnimationType(group) {
   // Signal 1 (Datawrapper): group id contains 'area-fills' → always Fade In
   if (id.includes('area-fills')) return 'fade_in';
 
-  // Signal 2 (Datawrapper): any child path has inline 'fill: none' → Draw On
-  // (Datawrapper encodes stroke-only paths this way; other tools may use fill="none")
-  if (_hasStrokeOnlyPath(group)) return 'draw_on';
+  // Signal 2 (Datawrapper): any child path has inline 'fill: none' → Trace.
+  // A stroke-only path is a real line, so draw it along its own path
+  // (stroke-dashoffset) rather than the clip-wipe draw_on — truer, and correct
+  // for non-monotonic lines. draw_on stays available as a manual option.
+  // See checklist §1 / ADR 0008 #1.
+  if (_hasStrokeOnlyPath(group)) return 'trace';
 
   // Signals 3 & 4: generic geometry
   return _detectGeneric(group);
@@ -70,6 +73,42 @@ function _translateY(el) {
   const m = ((el.getAttribute && el.getAttribute('transform')) || '')
     .match(/translate\(\s*-?[\d.eE+]+[,\s]+(-?[\d.eE+]+)/);
   return m ? parseFloat(m[1]) : 0;
+}
+
+function _translateX(el) {
+  const m = ((el.getAttribute && el.getAttribute('transform')) || '')
+    .match(/translate\(\s*(-?[\d.eE+]+)/);
+  return m ? parseFloat(m[1]) : 0;
+}
+
+// A dots-svg container is EITHER a scatter plot (discrete points → pop_in) or a
+// line rendered as thousands of tightly-packed dots (→ wipe). The discriminator
+// is spacing, not count: a dots-line's adjacent dots sit far below their own
+// diameter so they read as continuous, whereas scatter points stand apart.
+// (SPR line: median x-gap 0.24px vs 5px dot ø; scatter: 4.6px.) See checklist §1.
+//
+// Local dot-radius parse rather than borrowing animate.js's _dotRadius — keeps
+// detect.js free of any forward dependency on animate.js (same reason _translateY
+// is duplicated here).
+function _dotArcRadius(dot) {
+  const p = dot.querySelector && dot.querySelector('path, circle');
+  if (!p) return null;
+  if (p.tagName.toLowerCase() === 'circle') return parseFloat(p.getAttribute('r')) || null;
+  const m = (p.getAttribute('d') || '').match(/^M\s*[\d.]+\s*,\s*0\s*A\s*([\d.]+)/);
+  return m ? parseFloat(m[1]) : null;
+}
+
+function _dotsFormLine(dotsRoot) {
+  const dots = [...dotsRoot.children].filter(c => c.tagName.toLowerCase() === 'g');
+  if (dots.length < 50) return false; // too few marks to read as a rendered line
+  const xs = dots.map(_translateX).filter(Number.isFinite).sort((a, b) => a - b);
+  if (xs.length < 2) return false;
+  const gaps = [];
+  for (let i = 1; i < xs.length; i++) gaps.push(xs[i] - xs[i - 1]);
+  gaps.sort((a, b) => a - b);
+  const medianGap = gaps[gaps.length >> 1];
+  const r = _dotArcRadius(dots[0]) || 2.5;
+  return medianGap < r; // sub-radius spacing ⇒ dots overlap ⇒ a continuous line
 }
 
 // Clause 1: positive-area direct-child rects. Same guard as _rectUnionBounds
@@ -196,7 +235,11 @@ function detectElements(svgEl) {
     if (select === 'root') {
       if (!seen.has(rootId)) {
         seen.add(rootId);
-        elements.push(_makeElement(rootId, root, defaultAnimation));
+        // A dense dots-svg is a line rendered as dots → wipe it left-to-right
+        // instead of popping every point in at once. Sparse dots stay pop_in.
+        const anim = (rootId === 'dots-svg' && _dotsFormLine(root))
+          ? 'wipe_right' : defaultAnimation;
+        elements.push(_makeElement(rootId, root, anim));
       }
     } else {
       for (const child of root.children) {
@@ -223,6 +266,18 @@ function detectElements(svgEl) {
       animation_type: 'wipe_right',
       color:          _firstRectFill(rowG),
     });
+  }
+
+  // Header text-intro (ADR 0007 / checklist §5): the title+subtitle container is a
+  // bubble-up candidate, emitted as ONE element — injectBubbleUp splits every text
+  // run inside it. Matched by the container-header-svg segment of the compound id.
+  const header = svgEl.querySelector('[id*="container-header-svg"]');
+  if (header && header.querySelector('text')) {
+    const id = header.getAttribute('id');
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      elements.push({ group_id: id, label: 'Header', animation_type: 'bubble_up', color: '' });
+    }
   }
 
   return elements;

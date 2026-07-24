@@ -27,7 +27,7 @@ function _progress(elem, t) {
 
 // Create static clip paths with no <animate> children. We mutate the rect
 // attributes directly each frame so XMLSerializer captures the right values.
-function _setupExportClips(svgEl, config, bounds) {
+function _setupExportClips(svgEl, config, bounds, measurements = {}) {
   let defs = svgEl.querySelector('defs');
   if (!defs) {
     defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
@@ -68,7 +68,9 @@ function _setupExportClips(svgEl, config, bounds) {
         // wipe_right: per-row clip spanning the row height, width driven 0→full
         // (see _wipeGeometry in animate.js). Full width stored as data-w so
         // _applyAtTime drives it without re-measuring the row each frame.
-        const geo = _wipeGeometry(group) ??
+        // Rects (stacked rows) → dots-as-line (SPR) → whole-chart, same order
+        // as injectWipeRight.
+        const geo = _wipeGeometry(group) ?? _dotsWipeGeometry(group) ??
           { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h };
         rect.setAttribute('x',      geo.x);
         rect.setAttribute('y',      geo.y);
@@ -83,6 +85,24 @@ function _setupExportClips(svgEl, config, bounds) {
 
     if (elem.animation_type === 'fade_in' || elem.animation_type === 'pop_in') {
       group.setAttribute('opacity', '0');
+    }
+
+    // bubble_up: split the header runs into per-unit <text> now (static start
+    // state + data-bubble-* timing stamped by _splitBubbleRuns); _applyAtTime
+    // drives each unit's opacity/translate per frame. See animate.js.
+    if (elem.animation_type === 'bubble_up') {
+      const runs = measurements[elem.group_id];
+      if (runs) _splitBubbleRuns(group, runs, elem.start_time, elem.element_duration, false);
+    }
+
+    // trace: no clip — set the static dash attributes on each stroke-only path
+    // (see injectTrace in animate.js). _applyAtTime drives stroke-dashoffset.
+    if (elem.animation_type === 'trace') {
+      for (const path of _strokePaths(group)) {
+        path.setAttribute('pathLength', '1');
+        path.setAttribute('stroke-dasharray', '1 1');
+        path.setAttribute('stroke-dashoffset', '1');
+      }
     }
   });
 }
@@ -101,6 +121,24 @@ function _applyAtTime(svgEl, config, bounds, t) {
       case 'draw_on': {
         const rect = svgEl.querySelector(`#ecl-${i} rect`);
         if (rect) rect.setAttribute('width', p * bounds.w);
+        break;
+      }
+      case 'trace': {
+        // Draw the stroke by retracting the dash gap: offset 1 (hidden) → 0 (drawn).
+        for (const path of _strokePaths(group)) path.setAttribute('stroke-dashoffset', 1 - p);
+        break;
+      }
+      case 'bubble_up': {
+        // Each split unit fades + rises on its own begin/dur (data-bubble-*).
+        // Element-level p is ignored here — timing is per unit.
+        for (const text of group.querySelectorAll('text[data-bubble-begin]')) {
+          const b    = parseFloat(text.getAttribute('data-bubble-begin'));
+          const d    = parseFloat(text.getAttribute('data-bubble-dur'));
+          const rise = parseFloat(text.getAttribute('data-bubble-rise'));
+          const pu   = d > 0 ? Math.max(0, Math.min(1, (t - b) / d)) : (t >= b ? 1 : 0);
+          text.setAttribute('opacity', pu);
+          text.setAttribute('transform', `translate(0,${(rise * (1 - pu)).toFixed(3)})`);
+        }
         break;
       }
       case 'fade_in':
@@ -212,6 +250,11 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
   const parser = new DOMParser();
   const svgEl  = parser.parseFromString(svgString, 'image/svg+xml').documentElement;
 
+  // Font-first (checklist §0): inline the real Knowledge face before measuring,
+  // clipping, or rasterising. This is failure mode #2 in the checklist — a
+  // standalone raster silently drops the font unless it travels inside the SVG.
+  await embedFonts(svgEl); // fonts.js
+
   // Datawrapper SVGs have no viewBox — read width/height attributes directly.
   // For SVGs with a viewBox, the viewBox dimensions define the coordinate space.
   const vbStr = svgEl.getAttribute('viewBox');
@@ -237,7 +280,12 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
     if (el) el.remove();
   });
 
-  _setupExportClips(svgEl, config, bounds);
+  // Bubble-up glyph measurement (live probe, real font) before the split. No-op
+  // unless the config has a bubble_up element. See measureBubbleUnits.
+  const bubbleMeasurements = await measureBubbleUnits(svgEl, config); // animate.js
+  const cameraPlan = await computeCameraPlan(svgEl, config);          // camera.js (§3/§4)
+  _setupExportClips(svgEl, config, bounds, bubbleMeasurements);
+  if (cameraPlan) setupCamera(svgEl, cameraPlan, config.camera || {}); // static camera scaffold
 
   // The SVG must be in the live DOM for fonts and styles to resolve correctly.
   const host = document.createElement('div');
@@ -272,6 +320,7 @@ async function captureFrames(svgString, config, totalDuration, onProgress, { tra
   try {
     for (let i = 0; i < totalFrames; i++) {
       _applyAtTime(live, config, bounds, i / fps);
+      if (cameraPlan) applyCameraAtTime(live, cameraPlan, i / fps); // camera.js per-frame
       const canvas = await _svgToCanvas(live, canvasW, canvasH);
       frames.push(await new Promise(res => canvas.toBlob(res, 'image/png')));
       if (onProgress) onProgress(i + 1, totalFrames);
@@ -334,11 +383,14 @@ async function _cleanFrames(ff, count) {
 // Uses animate.js because the output is played in a browser, not serialised.
 async function exportSvg(svgString, config) {
   const svgEl = new DOMParser().parseFromString(svgString, 'image/svg+xml').documentElement;
+  await embedFonts(svgEl); // fonts.js — font-first (checklist §0), see captureFrames
   (config.hidden_ids || []).forEach(id => {
     const el = svgEl.querySelector(`[id="${_esc(id)}"]`);
     if (el) el.remove();
   });
-  const animated = buildAnimatedSvg(svgEl, config); // from animate.js
+  const measurements = await measureBubbleUnits(svgEl, config); // animate.js (bubble_up)
+  const cameraPlan   = await computeCameraPlan(svgEl, config);  // camera.js (§3/§4)
+  const animated = buildAnimatedSvg(svgEl, config, measurements, cameraPlan); // from animate.js
   const out      = new XMLSerializer().serializeToString(animated);
   _download(new Blob([out], { type: 'image/svg+xml' }), 'animated.svg');
 }

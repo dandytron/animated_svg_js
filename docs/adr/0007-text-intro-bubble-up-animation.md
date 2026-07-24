@@ -2,6 +2,24 @@
 
 **Status:** Proposed
 **Date:** 2026-07-15
+**Update 2026-07-20:** re-implemented and proven on the China oil chart
+(`scratch_folder/bubble.py`) after the original SpaceX prototype was found never
+to have been committed. Confirms the spec; adds the font-ordering learning below.
+
+## Update (2026-07-20) — measure in the real font, and embed it *first*
+
+The rebuild fell into the exact trap this ADR already flagged ("measure in the
+*real* font"), which is worth escalating from a footnote to a hard rule.
+Datawrapper names Knowledge but ships no font; measuring the raw export lays the
+header out in a fallback face **~27% wider** (467px vs 367px on the title), and
+pinning each glyph to those positions spreads the headline out visibly. Fix:
+measure against a copy of the SVG that already has the `@font-face` injected.
+
+Generalising: the missing font caused **three** distinct bugs this session
+(clipped headlines, a dropped export font, skewed glyph metrics). **Font
+embedding must be the first step of the animation pipeline — before any
+measurement, split, or layout — not a final styling pass.** See
+`docs/line-cinematic-integration-checklist.md` §0.
 
 ## Context
 
@@ -39,8 +57,12 @@ Preserved prototype outputs:
   under ~1s regardless of run length (title and subtitle run concurrently).
 - **Footer:** note/source fade in (opacity only, no movement) after the intro.
 - **Both animation systems (ADR 0003):** SMIL drives the preview; the frame-capture
-  export drives the same per-unit `begin`s via `setCurrentTime`. The prototype
-  exports cleanly, so no divergence.
+  export drives the same per-unit timing by **direct attribute writes** — at each
+  frame it computes each unit's opacity/translate from the stored per-unit `begin`
+  and `dur` and writes them to the DOM. (Correction, 2026-07-23: an earlier draft
+  said the export uses `setCurrentTime` capture; the shipping `export.js` does not,
+  and cannot — SMIL state serializes to frame-zero, per ADR 0003. The per-unit
+  `begin`s are the shared *data*, not a shared mechanism.)
 - **viewBox stamping (ADR 0004)** applies unchanged for scaled export.
 
 ## Decision (proposed)
