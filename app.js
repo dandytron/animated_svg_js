@@ -13,6 +13,7 @@ const state = {
   elements: [],    // detected AnimatableElements (client-side)
   queue:    [],    // {group_id, label, animation_type, start_time, element_duration, color}
   hidden:   new Set(), // IDs of elements removed from preview and export
+  camera:   null,      // §3/§4 whole-chart camera config, or null when off
 };
 
 // On static hosts (GitHub Pages) there is no /fetch-svg proxy — the Datawrapper
@@ -38,6 +39,20 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('input-label').textContent = 'Open an SVG file exported from Datawrapper';
   }
   document.getElementById('total-duration').addEventListener('input', validateOverhangs);
+  // §3/§4 camera toggle (opt-in whole-chart effect). split-draw only applies with
+  // the camera on, so it's disabled until then.
+  const camToggle   = document.getElementById('camera-toggle');
+  const splitToggle = document.getElementById('camera-split-toggle');
+  const syncCamera = () => {
+    splitToggle.disabled = !camToggle.checked;
+    state.camera = camToggle.checked
+      ? { enabled: true, split_draw: splitToggle.checked, duration: +document.getElementById('total-duration').value }
+      : null;
+  };
+  splitToggle.disabled = true;
+  camToggle.addEventListener('change', syncCamera);
+  splitToggle.addEventListener('change', syncCamera);
+  document.getElementById('total-duration').addEventListener('input', syncCamera);
   document.getElementById('queue-all-btn').addEventListener('click', queueAll);
   document.getElementById('preview-btn').addEventListener('click', preview);
   document.getElementById('export-btn').addEventListener('click', toggleExportMenu);
@@ -202,6 +217,11 @@ function injectSvg() {
         if (dom) break;
       }
     }
+    // Elements not nested under a chartRoot — synthesized stacked rows and the
+    // header text-intro group — still need a click-to-queue handler. Without the
+    // stopPropagation binding, a header click would fall through to the hide
+    // handler instead of queueing it.
+    if (!dom) dom = _findById(container, el.group_id);
     if (!dom) continue;
     dom.style.cursor = 'pointer';
     dom.addEventListener('click', e => { e.stopPropagation(); toggleElement(el.group_id); });
@@ -415,11 +435,13 @@ function renderQueue() {
 
 function _animOpts(selected) {
   return [
+    ['trace',              'Trace (draw along path)'],
     ['draw_on',            'Draw On'],
     ['fade_in',            'Fade In'],
     ['pop_in',             'Pop In'],
     ['grow_from_baseline', 'Grow from Baseline'],
     ['wipe_right',         'Wipe Right'],
+    ['bubble_up',          'Bubble Up (text intro)'],
     ['radial_sweep',       'Radial Sweep'],
   ].map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`).join('');
 }
@@ -465,6 +487,7 @@ function buildConfig() {
       element_duration: item.element_duration,
     })),
     hidden_ids: [...state.hidden],
+    camera:     state.camera || null,   // §3/§4 whole-chart camera (opt-in)
   };
 }
 
@@ -479,6 +502,10 @@ async function preview() {
     const config = buildConfig();
     const parser = new DOMParser();
     const svgEl  = parser.parseFromString(state.svg, 'image/svg+xml').documentElement;
+    // Font-first (checklist §0): embed the real Knowledge face before anything
+    // measures, splits, or renders. buildAnimatedSvg clones svgEl, so the font
+    // must be present here for the clone to inherit it.
+    await embedFonts(svgEl); // fonts.js
     config.hidden_ids.forEach(id => {
       const el = _findById(svgEl, id);
       if (el) el.remove();
@@ -488,7 +515,11 @@ async function preview() {
     // so charts whose first <rect> is real content are handled correctly.
     const bgRect = _findBackgroundRect(svgEl);
     if (bgRect) bgRect.style.display = 'none';
-    const animated = buildAnimatedSvg(svgEl, config); // animate.js
+    // Bubble-up glyph measurement (live probe, real font) before the split.
+    // No-op unless a queued element is bubble_up. See measureBubbleUnits.
+    const measurements = await measureBubbleUnits(svgEl, config); // animate.js
+    const cameraPlan   = await computeCameraPlan(svgEl, config);   // camera.js (§3/§4)
+    const animated = buildAnimatedSvg(svgEl, config, measurements, cameraPlan); // animate.js
 
     const pc = document.getElementById('preview-container');
     pc.innerHTML = '';

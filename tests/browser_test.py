@@ -53,7 +53,8 @@ async (path) => {
 # visible from a previous load, so a bare wait races against the async fetch.
 def load_via_test_button(page):
     page.click('#test-btn')
-    page.wait_for_function('state.elements.length === 5 && state.queue.length === 0')
+    # 6 = 4 lines + area fills + the header bubble_up element (§5).
+    page.wait_for_function('state.elements.length === 6 && state.queue.length === 0')
 
 
 def test_load_and_detection(page):
@@ -65,7 +66,8 @@ def test_load_and_detection(page):
     check('Test button: no "no elements" warning', warning_hidden)
 
     elements = page.evaluate('state.elements.map(e => ({id: e.group_id, label: e.label, type: e.animation_type}))')
-    check('Test button: 5 elements detected (4 lines + area fills)', len(elements) == 5,
+    # §5: the header is now detected too (4 lines + area fills + header = 6).
+    check('Test button: 6 elements detected (4 lines + area fills + header)', len(elements) == 6,
           f'got {len(elements)}: {[e["id"] for e in elements]}')
 
     labels = {e['label'] for e in elements}
@@ -73,16 +75,22 @@ def test_load_and_detection(page):
           'WORKDAY CLASS A' in labels, f'labels: {labels}')
 
     types = {e['id']: e['type'] for e in elements}
-    check('Lines detected as draw_on',
-          all(t == 'draw_on' for i, t in types.items() if i != 'area-fills-svg'), str(types))
+    # §1 / ADR 0008 #1: stroke-only line paths default to trace; §5: header → bubble_up.
+    def _is_line(i):
+        return i != 'area-fills-svg' and 'container-header-svg' not in i
+    check('Lines detected as trace',
+          all(t == 'trace' for i, t in types.items() if _is_line(i)), str(types))
     check('Area fills detected as fade_in', types.get('area-fills-svg') == 'fade_in', str(types))
+    check('§5: header detected as bubble_up',
+          any(t == 'bubble_up' for i, t in types.items() if 'container-header-svg' in i), str(types))
 
 
 def test_detection_per_chart(page):
+    # §5: every chart also detects its header as a bubble_up element (+1, +bubble_up).
     expectations = {
-        '/examples/area_graph_bv.svg':    (10, {'fade_in'}),
-        '/examples/bar_chart_iphone.svg': (10, {'grow_from_baseline'}),
-        '/examples/scatter_plot.svg':     (1,  {'pop_in'}),
+        '/examples/area_graph_bv.svg':    (11, {'fade_in', 'bubble_up'}),
+        '/examples/bar_chart_iphone.svg': (11, {'grow_from_baseline', 'bubble_up'}),
+        '/examples/scatter_plot.svg':     (2,  {'pop_in', 'bubble_up'}),
     }
     for path, (count, types) in expectations.items():
         els = page.evaluate(LOAD_EXAMPLE_JS, path)
@@ -463,12 +471,15 @@ async (path) => {
 def test_synthesis_stacked(page):
     r = page.evaluate(STACKED_SYNTH_JS, '/examples/stacked_bar_survey.svg')
 
-    els = r['elements']
+    # §5: the real stacked chart also detects a header (bubble_up); filter to rows.
+    els = [e for e in r['elements'] if e['id'].startswith('row-')]
     check('synthesis: 2 row elements emitted', len(els) == 2, str(els))
     check('synthesis: labels are "Row 1" / "Row 2"',
           [e['label'] for e in els] == ['Row 1', 'Row 2'], str([e['label'] for e in els]))
     check('synthesis: type is wipe_right', all(e['type'] == 'wipe_right' for e in els), str(els))
     check('synthesis: rows get a real colour swatch', all(e['color'] for e in els), str([e['color'] for e in els]))
+    check('synthesis: header also detected as bubble_up',
+          any(e['type'] == 'bubble_up' for e in r['elements']), str(r['elements']))
 
     check('synthesis: row-N-svg baked into state.svg', r['baked'], str(r['baked']))
 
@@ -502,7 +513,8 @@ def test_queue_all(page):
     page.evaluate(LOAD_EXAMPLE_JS, '/examples/bar_chart_iphone.svg')
     page.click('#queue-all-btn')
     queue_len = page.evaluate('state.queue.length')
-    check('Queue all: queue fills with all detected series', queue_len == 10, f'queue={queue_len}')
+    # §5: 10 bars + the header bubble_up element = 11.
+    check('Queue all: queue fills with all detected series', queue_len == 11, f'queue={queue_len}')
     check('Queue all: button greys out after',
           page.eval_on_selector('#queue-all-btn', 'el => el.disabled'))
 
@@ -512,24 +524,27 @@ def test_queue_all(page):
           not page.eval_on_selector('#queue-all-btn', 'el => el.disabled'))
 
 
-def test_title_footer_hiding(page):
+def test_header_queue_and_footer_hide(page):
+    # §5: the header is now an animatable element, so clicking it QUEUES it for
+    # bubble-up (was: hides it). The footer is still a click-to-hide target.
     load_via_test_button(page)
 
     page.eval_on_selector('#svg-container [id*="container-header-svg"] text',
                           'el => el.dispatchEvent(new MouseEvent("click", {bubbles: true}))')
-    check('Click title: appears in Hidden elements panel',
-          not page.eval_on_selector('#hidden-panel', 'el => el.hidden'))
-    check('Click title: dims in stage',
-          page.eval_on_selector('#svg-container [id*="container-header-svg"]',
-                                'el => el.style.opacity === "0.15"'))
+    queued = page.evaluate(
+        'state.queue.some(q => q.group_id.includes("container-header-svg") '
+        '&& q.animation_type === "bubble_up")')
+    check('Click header: queued as bubble_up (not hidden)',
+          queued and page.evaluate('state.hidden.size') == 0, str(queued))
+    check('Click header: hidden panel stays empty',
+          page.eval_on_selector('#hidden-panel', 'el => el.hidden'))
 
     page.eval_on_selector('#svg-container [id*="container-footer-svg"] text',
                           'el => el.dispatchEvent(new MouseEvent("click", {bubbles: true}))')
-    check('Click footer: also hidden', page.evaluate('state.hidden.size') == 2)
+    check('Click footer: hidden', page.evaluate('state.hidden.size') == 1)
 
     page.click('.restore-btn')
-    page.click('.restore-btn')
-    check('Restore both: panel empties and hides',
+    check('Restore footer: panel empties and hides',
           page.evaluate('state.hidden.size') == 0
           and page.eval_on_selector('#hidden-panel', 'el => el.hidden'))
 
@@ -844,6 +859,35 @@ def test_capture_frames(page):
           json.dumps(out))
 
 
+def test_camera_capture_end_to_end(page):
+    # §3/§4 export wiring: captureFrames with the camera on must produce frames
+    # and the plot transform must differ across time (the camera actually moved).
+    out = page.evaluate("""
+      async () => {
+        const svg = await (await fetch('/examples/multi_line_graph.svg')).text();
+        const config = { elements: [], hidden_ids: [],
+          camera: { enabled: true, split_draw: true, duration: 2 } };
+        const r = await captureFrames(svg, config, 2, null, { fps: 5, targetWidth: 800 });
+        // Re-derive the plan the way captureFrames does, and confirm setup+apply
+        // move the plot transform between t=0 and the summit.
+        const svgEl = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+        await embedFonts(svgEl);
+        const plan = await computeCameraPlan(svgEl, config);
+        setupCamera(svgEl, plan);
+        const plot = svgEl.querySelector('[id="svg-main-svg"]');
+        applyCameraAtTime(svgEl, plan, 0);   const a = plot.getAttribute('transform');
+        applyCameraAtTime(svgEl, plan, 1.0); const b = plot.getAttribute('transform');
+        return { n: r.frames.length, sizes: r.frames.map(f => f.size),
+                 hasPlan: !!plan, moved: a !== b };
+      }
+    """)
+    check('camera capture: frames produced with camera enabled', out['n'] == 10, json.dumps(out))
+    check('camera capture: all frames are non-empty PNGs', all(s > 1000 for s in out['sizes']),
+          json.dumps(out))
+    check('camera capture: a plan was computed and the plot transform moves over time',
+          out['hasPlan'] and out['moved'], json.dumps(out))
+
+
 def test_transparent_capture(page):
     """Regression: viewBox stamping (ADR 0004) must not defeat background-rect
     hiding — transparent frames must actually be mostly transparent."""
@@ -883,6 +927,515 @@ def test_background_rect_detection(page):
     check('Transparent export: background rect found on bar chart', found is not None, str(found))
 
 
+def test_unit_embed_fonts(page):
+    # Font-first (checklist §0). embedFonts inlines the Knowledge @font-face as
+    # data-URIs into <defs>, gated on a Knowledge reference, idempotently.
+    r = page.evaluate("""
+      async () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const parse = s => new DOMParser().parseFromString(s, 'image/svg+xml').documentElement;
+
+        // Datawrapper-style SVG that names Knowledge in an inline style.
+        const dw = parse('<svg xmlns="' + NS + '"><defs/>' +
+          '<text style="font-family: Knowledge;">hi</text></svg>');
+        await embedFonts(dw);
+        const style = dw.querySelector('style[data-embedded-fonts]');
+        const css   = style ? style.textContent : '';
+
+        // Idempotent: a second pass must not add a second <style>.
+        await embedFonts(dw);
+        const styleCount = dw.querySelectorAll('style[data-embedded-fonts]').length;
+
+        // Gated: an SVG that never names Knowledge is left untouched.
+        const plain = parse('<svg xmlns="' + NS + '"><text style="fill:#000">hi</text></svg>');
+        const before = new XMLSerializer().serializeToString(plain);
+        await embedFonts(plain);
+        const plainUnchanged = new XMLSerializer().serializeToString(plain) === before;
+
+        // Missing <defs>: embedFonts creates one.
+        const noDefs = parse('<svg xmlns="' + NS + '"><text font-family="Knowledge">hi</text></svg>');
+        await embedFonts(noDefs);
+        const madeDefs = !!noDefs.querySelector('defs style[data-embedded-fonts]');
+
+        return {
+          hasStyle: !!style,
+          faceCount: (css.match(/@font-face/g) || []).length,
+          weights: [300, 400, 700].every(w => css.includes('font-weight:' + w)),
+          dataUri: css.includes('src:url(data:font/woff;base64,'),
+          styleCount, plainUnchanged, madeDefs,
+        };
+      }
+    """)
+    check('embedFonts: injects a marked <style> into defs', r['hasStyle'], str(r))
+    check('embedFonts: three @font-face rules (300/400/700)',
+          r['faceCount'] == 3 and r['weights'], str(r))
+    check('embedFonts: woff inlined as base64 data-URI', r['dataUri'], str(r))
+    check('embedFonts: idempotent — one <style> after two passes', r['styleCount'] == 1, str(r))
+    check('embedFonts: gated — SVG without Knowledge is byte-identical', r['plainUnchanged'], str(r))
+    check('embedFonts: creates <defs> when absent', r['madeDefs'], str(r))
+
+
+def test_unit_trace_preview(page):
+    # §1 / ADR 0008 #1: injectTrace draws a stroked line via stroke-dashoffset.
+    r = page.evaluate("""
+      () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const svg = new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '"><g id="ser">' +
+          '<path id="p" style="fill: none; stroke: rgb(1,2,3);" d="M0,0 L10,10 L20,0"/>' +
+          '</g></svg>', 'image/svg+xml').documentElement;
+        injectTrace(svg.querySelector('#ser'), '0.5s', '2s');
+        const p = svg.querySelector('#p');
+        const a = p.querySelector('animate');
+        return {
+          pathLength: p.getAttribute('pathLength'),
+          dasharray:  p.getAttribute('stroke-dasharray'),
+          offset0:    p.getAttribute('stroke-dashoffset'),
+          attr:  a && a.getAttribute('attributeName'),
+          from:  a && a.getAttribute('from'),
+          to:    a && a.getAttribute('to'),
+          begin: a && a.getAttribute('begin'),
+          dur:   a && a.getAttribute('dur'),
+          fill:  a && a.getAttribute('fill'),
+        };
+      }
+    """)
+    check('trace preview: pathLength="1" + dasharray "1 1" + offset 1 (hidden)',
+          r['pathLength'] == '1' and r['dasharray'] == '1 1' and r['offset0'] == '1', str(r))
+    check('trace preview: animates stroke-dashoffset 1 → 0, freezing',
+          r['attr'] == 'stroke-dashoffset' and r['from'] == '1' and r['to'] == '0'
+          and r['fill'] == 'freeze', str(r))
+    check('trace preview: begin/dur passed through', r['begin'] == '0.5s' and r['dur'] == '2s', str(r))
+
+
+def test_unit_trace_export(page):
+    # §1: the export twin (ADR 0003). Static dash attrs at setup; _applyAtTime
+    # drives stroke-dashoffset = 1 − progress (no clip, no getTotalLength).
+    r = page.evaluate("""
+      () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const svgEl = new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '" width="100" height="100"><g id="ser">' +
+          '<path style="fill: none;" d="M0,0 L50,50"/></g></svg>', 'image/svg+xml').documentElement;
+        const config = { elements: [
+          { group_id: 'ser', animation_type: 'trace', start_time: 0, element_duration: 2 }] };
+        const bounds = _clipBounds(svgEl);
+        _setupExportClips(svgEl, config, bounds);
+        const path = svgEl.querySelector('path');
+        const setup = path.getAttribute('stroke-dashoffset');
+        _applyAtTime(svgEl, config, bounds, 1);   // p = 0.5
+        const mid = path.getAttribute('stroke-dashoffset');
+        _applyAtTime(svgEl, config, bounds, 2);   // p = 1 → fully drawn
+        const end = path.getAttribute('stroke-dashoffset');
+        return { pathLength: path.getAttribute('pathLength'), setup, mid: +mid, end: +end };
+      }
+    """)
+    check('trace export: setup sets pathLength + hidden offset 1',
+          r['pathLength'] == '1' and r['setup'] == '1', str(r))
+    check('trace export: dashoffset = 1 − progress (0.5 at half, 0 at end)',
+          abs(r['mid'] - 0.5) < 1e-6 and abs(r['end']) < 1e-6, str(r))
+
+
+def test_unit_dots_line_vs_scatter(page):
+    # §1: distinguish a dots-rendered line (dense, → wipe) from a scatter plot
+    # (sparse, → pop_in) by median dot spacing, and measure the dots-line wipe
+    # geometry tightly (not the whole chart).
+    r = page.evaluate("""
+      () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const dot = 'M2.5,0A2.5,2.5,0,1,1,-2.5,0A2.5,2.5,0,1,1,2.5,0';
+        const dots = (n, gap) => {
+          let s = '';
+          for (let i = 0; i < n; i++)
+            s += '<g id="dot-svg" transform="translate(' + (10 + i*gap).toFixed(3) +
+                 ', ' + (50 + (i % 7)).toFixed(2) + ')"><path d="' + dot +
+                 '" style="fill: rgb(10,66,134);"/></g>';
+          return s;
+        };
+        const parse = inner => new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '">' + inner + '</svg>', 'image/svg+xml').documentElement;
+
+        const denseRoot  = parse('<g id="dots-svg">' + dots(200, 0.24) + '</g>').querySelector('#dots-svg');
+        const sparseRoot = parse('<g id="dots-svg">' + dots(60, 4.6)  + '</g>').querySelector('#dots-svg');
+
+        const geo = _dotsWipeGeometry(denseRoot);
+        const noDots = _dotsWipeGeometry(
+          parse('<g id="g"><rect width="5" height="5"/></g>').querySelector('#g'));
+
+        // Detection routing through the real pipeline.
+        const denseEls  = detectElements(parse('<g id="dots-svg">' + dots(200, 0.24) + '</g>'));
+        const sparseEls = detectElements(parse('<g id="dots-svg">' + dots(60, 4.6)  + '</g>'));
+
+        return {
+          denseIsLine:  _dotsFormLine(denseRoot),
+          sparseIsLine: _dotsFormLine(sparseRoot),
+          geoX: geo.x, geoW: geo.w,             // x ≈ 10−2.5=7.5, w ≈ 199*0.24+5 ≈ 52.8
+          noDots,
+          denseType:  denseEls.length === 1 ? denseEls[0].animation_type : null,
+          sparseType: sparseEls.length === 1 ? sparseEls[0].animation_type : null,
+        };
+      }
+    """)
+    check('dots discriminate: dense (0.24px gap) reads as a line',  r['denseIsLine'] is True, str(r))
+    check('dots discriminate: sparse (4.6px gap) reads as scatter', r['sparseIsLine'] is False, str(r))
+    check('dots wipe geo: tight to the dots, radius-padded (x≈7.5, w≈52.8)',
+          abs(r['geoX'] - 7.5) < 0.1 and abs(r['geoW'] - 52.76) < 0.5, str(r))
+    check('dots wipe geo: null when the group has no dots', r['noDots'] is None, str(r))
+    check('detection: dense dots-svg → wipe_right', r['denseType'] == 'wipe_right', str(r))
+    check('detection: sparse dots-svg → pop_in', r['sparseType'] == 'pop_in', str(r))
+
+
+HEADER_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100">'
+              '<g id="hdr"><text transform="translate(0,0)">'
+              '<tspan x="0" y="20" fill="rgb(1,2,3)" style="font-size:20px">Hi there</tspan>'
+              '</text></g></svg>')
+
+
+def test_unit_bubble_up_preview(page):
+    # §5 / ADR 0007: measure header glyphs live, split into staggered rising units.
+    r = page.evaluate("""
+      async () => {
+        const svgEl = new DOMParser().parseFromString(
+          `%s`, 'image/svg+xml').documentElement;
+        const config = { elements: [
+          { group_id: 'hdr', animation_type: 'bubble_up', start_time: 0, element_duration: 1 }] };
+        const m = await measureBubbleUnits(svgEl, config);
+        const animated = buildAnimatedSvg(svgEl, config, m);
+        const g     = animated.querySelector('#hdr');
+        const wrap  = g.querySelector('g');
+        const units = [...g.querySelectorAll('text')];
+        const begins = units.map(u => parseFloat(u.querySelector('animate').getAttribute('begin')));
+        return {
+          runCount:  m['hdr'] ? m['hdr'].length : 0,
+          unitCount: units.length,
+          firstText: units[0].querySelector('tspan').textContent,
+          opacity0:  units[0].getAttribute('opacity'),
+          startTf:   units[0].getAttribute('transform'),
+          wrapTf:    wrap.getAttribute('transform'),
+          hasMove:   units.every(u => !!u.querySelector('animateTransform')),
+          freezes:   units.every(u => u.querySelector('animate').getAttribute('fill') === 'freeze'),
+          staggered: begins.length > 1 && begins[begins.length - 1] > begins[0]
+                     && begins.every((b, i) => i === 0 || b >= begins[i - 1]),
+          within:    begins.every(b => b <= 1),   // whole intro inside the element window
+        };
+      }
+    """ % HEADER_SVG.replace('`', ''))
+    check('bubble preview: one run measured', r['runCount'] == 1, str(r))
+    check('bubble preview: "Hi there" → 7 letter units (spaces dropped)', r['unitCount'] == 7, str(r))
+    check('bubble preview: first unit is "H", starts hidden + risen',
+          r['firstText'] == 'H' and r['opacity0'] == '0' and r['startTf'] == 'translate(0,10)', str(r))
+    check('bubble preview: units wrapped in <g> with the run transform',
+          r['wrapTf'] == 'translate(0,0)', str(r))
+    check('bubble preview: each unit fades + translates, freezing',
+          r['hasMove'] and r['freezes'], str(r))
+    check('bubble preview: begins stagger left→right, within the window',
+          r['staggered'] and r['within'], str(r))
+
+
+def test_unit_bubble_up_word_mode(page):
+    # ADR 0007's per-word toggle: "Hi there" → 2 word units.
+    r = page.evaluate("""
+      async () => {
+        const svgEl = new DOMParser().parseFromString(`%s`, 'image/svg+xml').documentElement;
+        const config = { elements: [
+          { group_id: 'hdr', animation_type: 'bubble_up', bubble_mode: 'word',
+            start_time: 0, element_duration: 1 }] };
+        const m = await measureBubbleUnits(svgEl, config);
+        const animated = buildAnimatedSvg(svgEl, config, m);
+        const units = [...animated.querySelectorAll('#hdr text')];
+        return { count: units.length, first: units[0].querySelector('tspan').textContent };
+      }
+    """ % HEADER_SVG.replace('`', ''))
+    check('bubble word mode: 2 word units', r['count'] == 2, str(r))
+    check('bubble word mode: first unit is "Hi"', r['first'] == 'Hi', str(r))
+
+
+def test_unit_bubble_up_export(page):
+    # §5 export twin (ADR 0003): per-unit opacity/translate driven by data-bubble-*.
+    r = page.evaluate("""
+      async () => {
+        const svgEl = new DOMParser().parseFromString(`%s`, 'image/svg+xml').documentElement;
+        const config = { elements: [
+          { group_id: 'hdr', animation_type: 'bubble_up', start_time: 0, element_duration: 1 }] };
+        const m = await measureBubbleUnits(svgEl, config);
+        const bounds = _clipBounds(svgEl);
+        _setupExportClips(svgEl, config, bounds, m);
+        const units = [...svgEl.querySelectorAll('#hdr text[data-bubble-begin]')];
+        const first = units[0];
+        _applyAtTime(svgEl, config, bounds, 0);
+        const at0 = { op: first.getAttribute('opacity'), tf: first.getAttribute('transform') };
+        _applyAtTime(svgEl, config, bounds, 1);
+        const at1 = { op: first.getAttribute('opacity'), tf: first.getAttribute('transform') };
+        return { count: units.length, dur: first.getAttribute('data-bubble-dur'), at0, at1 };
+      }
+    """ % HEADER_SVG.replace('`', ''))
+    check('bubble export: 7 split units with timing data', r['count'] == 7, str(r))
+    check('bubble export: at t=0 first unit hidden + fully risen',
+          r['at0']['op'] == '0' and r['at0']['tf'] == 'translate(0,10.000)', str(r))
+    check('bubble export: at end first unit opaque + at rest',
+          r['at1']['op'] == '1' and r['at1']['tf'] == 'translate(0,0.000)', str(r))
+    check('bubble export: unit dur capped to fit window (0.32)', r['dur'] == '0.32', str(r))
+
+
+def test_unit_camera_frame_math(page):
+    # §3/§2 pure frame math (camera.js). Deterministic — synthetic points whose
+    # steepest fall is a known interior segment.
+    r = page.evaluate("""
+      () => {
+        // y grows downward; index 3 (y=20) is the summit, then it dives to y≈82.
+        const pts = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
+        const stage = [0, 0, 100, 100];
+        const drop  = findDrop(pts);
+        const fr    = buildCameraFrames(pts, stage, 2.0);
+        return {
+          dropI: drop.i,
+          frameCount: fr.frames.length,
+          framesDrop: fr.drop,
+          wideW: fr.frames[0][2],
+          summitW: fr.frames[2][2],
+          summitInStage: fr.frames[2][0] >= 0 && fr.frames[2][1] >= 0
+            && fr.frames[2][0] + fr.frames[2][2] <= 100.01
+            && fr.frames[2][1] + fr.frames[2][3] <= 100.01,
+          sf0: splitFraction(pts, 0),
+          sfEnd: splitFraction(pts, pts.length - 1),
+          sfMid: splitFraction(pts, 3),
+        };
+      }
+    """)
+    check('camera math: findDrop locates the interior summit (i=3)', r['dropI'] == 3, str(r))
+    check('camera math: six frames (wide,wide,summit,summit,held,held) + drop index',
+          r['frameCount'] == 6 and r['framesDrop'] == 3, str(r))
+    check('camera math: summit frame is tighter than wide', r['summitW'] < r['wideW'], str(r))
+    check('camera math: summit frame clamped inside the stage', r['summitInStage'], str(r))
+    check('camera math: splitFraction 0 at start, 1 at end, interior between',
+          r['sf0'] == 0 and abs(r['sfEnd'] - 1) < 1e-9 and 0 < r['sfMid'] < 1, str(r))
+
+
+def test_unit_camera_extraction(page):
+    # §3/§4 read-only extraction against a live, committed chart. Structural
+    # assertions + idempotency (extractors never mutate, so repeat = identical).
+    r = page.evaluate("""
+      async () => {
+        const svg = await (await fetch('/examples/multi_line_graph.svg')).text();
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;left:-99999px;top:0;width:900px;height:600px';
+        host.innerHTML = svg;
+        document.body.appendChild(host);
+        const svgEl = host.querySelector('svg');
+        try {
+          const path  = svgEl.querySelector('[id="lines-svg"] path');
+          const before = new XMLSerializer().serializeToString(svgEl);
+          const pts   = extractLinePoints(svgEl, path);
+          const ticks = extractTicks(svgEl);
+          const stage = detectStage(svgEl);
+          const after = new XMLSerializer().serializeToString(svgEl);
+          return {
+            nPts: pts.length,
+            firstFinite: Number.isFinite(pts[0][0]) && Number.isFinite(pts[0][1]),
+            nX: ticks.x.length, nY: ticks.y.length,
+            tickHasText: ticks.x.every(t => t.text) && ticks.y.every(t => t.text),
+            stage,
+            stageSane: stage[0] === 0 && stage[2] > 600 && stage[1] > 0
+                       && stage[1] + stage[3] <= 443.5 && stage[3] > 0,
+            readOnly: before === after,
+            stable: extractLinePoints(svgEl, path).length === pts.length
+                    && JSON.stringify(detectStage(svgEl)) === JSON.stringify(stage),
+          };
+        } finally { document.body.removeChild(host); }
+      }
+    """)
+    check('camera extract: line path → many root-space points', r['nPts'] > 20 and r['firstFinite'], str(r))
+    check('camera extract: x and y ticks parsed with text',
+          r['nX'] > 0 and r['nY'] > 0 and r['tickHasText'], str(r))
+    check('camera extract: stage is full-width, within canvas height', r['stageSane'], str(r['stage']))
+    check('camera extract: extractors never mutate the SVG (read-only)', r['readOnly'], str(r))
+    check('camera extract: idempotent — repeat calls identical', r['stable'], str(r))
+
+
+def test_unit_camera_plan(page):
+    # §3/§4 pure plan math (camera.js). Deterministic synthetic geometry.
+    r = page.evaluate("""
+      () => {
+        const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
+        const stage  = [0, 10, 300, 260];   // sx sy sw sh
+        const ticks  = { y: [{x:0,y:40,text:'30'},{x:0,y:120,text:'20'}],
+                         x: [{x:100,y:250,text:'Jan'},{x:200,y:250,text:'Feb'}] };
+        const plan = buildCameraPlan(points, stage, ticks, 10, { ox: 0, oy: 50, gx: 20 });
+        return {
+          nFrames: plan.frames.length,
+          scale0: plan.scales[0], scaleSummit: plan.scales[2],
+          tx0: plan.tx[0], ty0: plan.ty[0],           // wide → original offset (ox,oy)
+          yLabels: plan.yLabels.length, xLabels: plan.xLabels.length,
+          yTrackLen: plan.yLabels[0].ys.length, yOpsLen: plan.yLabels[0].ops.length,
+          yWideOp: plan.yLabels[0].ops[0],            // fully inside at wide → 1
+          gridStartsLen: plan.gridStarts.length,
+          hasSplit: typeof plan.splitFraction === 'number' && plan.splitFraction > 0,
+        };
+      }
+    """)
+    check('camera plan: six keyframes', r['nFrames'] == 6, str(r))
+    check('camera plan: wide scale 1, summit scale > 1 (tighter)',
+          r['scale0'] == 1 and r['scaleSummit'] > 1, str(r))
+    check('camera plan: wide transform reproduces plot offset (tx=ox, ty=oy)',
+          abs(r['tx0'] - 0) < 0.01 and abs(r['ty0'] - 50) < 0.01, str(r))
+    check('camera plan: one label track per tick, 6 samples each',
+          r['yLabels'] == 2 and r['xLabels'] == 2 and r['yTrackLen'] == 6 and r['yOpsLen'] == 6, str(r))
+    check('camera plan: label fully inside at wide → opacity 1', r['yWideOp'] == 1, str(r))
+    check('camera plan: gridline trim + split fraction present',
+          r['gridStartsLen'] == 6 and r['hasSplit'], str(r))
+
+
+def test_unit_camera_inject_smil(page):
+    # §3/§4 SMIL injection structure + idempotency (camera.js).
+    r = page.evaluate("""
+      () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const svgEl = new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '" width="400" height="300">' +
+          '<g id="svg-main-svg" transform="translate(0,50)">' +
+            '<g id="group-svg" transform="translate(20,0)">' +
+              '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/></g>' +
+            '</g>' +
+            '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>' +
+            '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>' +
+            '<path style="fill:none;stroke:red" d="M0,0 L100,100"/>' +
+          '</g></svg>', 'image/svg+xml').documentElement;
+
+        const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
+        const ticks  = { y:[{x:0,y:40,text:'30'}], x:[{x:100,y:250,text:'Jan'}] };
+        const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
+        injectCameraSMIL(svgEl, plan);
+
+        const plot = svgEl.querySelector('[id="svg-main-svg"]');
+        const wrap = svgEl.querySelector('g[data-camera]');
+        const line = svgEl.querySelector('[id="y-grid-lines-svg"] line');
+        const before = svgEl.querySelectorAll('g[data-camera]').length;
+        injectCameraSMIL(svgEl, plan);   // idempotency
+        const after = svgEl.querySelectorAll('g[data-camera]').length;
+
+        return {
+          clipRect: !!svgEl.querySelector('clipPath#stage-clip rect'),
+          wrapped:  !!wrap && wrap.querySelector('[id="svg-main-svg"]') === plot,
+          nTransforms: plot.getElementsByTagName('animateTransform').length,
+          hasScaleAdditive: [...plot.getElementsByTagName('animateTransform')]
+            .some(a => a.getAttribute('type') === 'scale' && a.getAttribute('additive') === 'sum'),
+          origYHidden: svgEl.querySelector('[id="y-tick-labels-svg"]').getAttribute('opacity') === '0',
+          origXHidden: svgEl.querySelector('[id="x-tick-labels-svg"]').getAttribute('opacity') === '0',
+          gridNonScaling: line.getAttribute('vector-effect') === 'non-scaling-stroke',
+          gridAnimated: line.getElementsByTagName('animate').length === 1,
+          axisLabels: svgEl.querySelector('g[data-camera-axes]')
+            ? svgEl.querySelector('g[data-camera-axes]').getElementsByTagName('text').length : 0,
+          idempotent: before === 1 && after === 1,
+        };
+      }
+    """)
+    check('camera SMIL: static stage clip rect created', r['clipRect'], str(r))
+    check('camera SMIL: plot wrapped in a clip <g> (clip on wrapper, not plot)', r['wrapped'], str(r))
+    check('camera SMIL: plot gets translate + additive-scale animateTransform',
+          r['nTransforms'] == 2 and r['hasScaleAdditive'], str(r))
+    check('camera SMIL: original tick labels hidden', r['origYHidden'] and r['origXHidden'], str(r))
+    check('camera SMIL: gridline non-scaling-stroke + x1 trim animate',
+          r['gridNonScaling'] and r['gridAnimated'], str(r))
+    check('camera SMIL: anchored axis labels rebuilt (y + x)', r['axisLabels'] == 2, str(r))
+    check('camera SMIL: idempotent — re-run does not double-wrap', r['idempotent'], str(r))
+
+
+CAMERA_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">'
+              '<g id="svg-main-svg" transform="translate(0,50)">'
+                '<g id="group-svg" transform="translate(20,0)">'
+                  '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/></g>'
+                '</g>'
+                '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>'
+                '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>'
+                '<path style="fill:none;stroke:red" d="M0,0 L100,100"/>'
+              '</g></svg>')
+
+
+def test_unit_camera_export(page):
+    # §3/§4 export twin (ADR 0003): setupCamera scaffolds statically; applyCameraAtTime
+    # writes the eased, interpolated transform + label positions per frame.
+    r = page.evaluate("""
+      () => {
+        const svgEl = new DOMParser().parseFromString(`%s`, 'image/svg+xml').documentElement;
+        const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
+        const ticks  = { y:[{x:0,y:40,text:'30'}], x:[{x:100,y:250,text:'Jan'}] };
+        const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
+        setupCamera(svgEl, plan);
+        const plot = svgEl.querySelector('[id="svg-main-svg"]');
+        const scaleOf = () => parseFloat((plot.getAttribute('transform').match(/scale\\(([-\\d.]+)/) || [])[1]);
+        const yLabel = svgEl.querySelector('text[data-cam-yi]');
+
+        applyCameraAtTime(svgEl, plan, 0);      // wide
+        const s0 = scaleOf(), y0 = yLabel.getAttribute('y');
+        applyCameraAtTime(svgEl, plan, 4.8);    // ~summit (keytimes .46–.50)
+        const sMid = scaleOf(), yMid = yLabel.getAttribute('y');
+
+        const before = svgEl.querySelectorAll('g[data-camera]').length;
+        setupCamera(svgEl, plan);               // idempotency
+        const after = svgEl.querySelectorAll('g[data-camera]').length;
+
+        return {
+          scaffolded: !!svgEl.querySelector('g[data-camera]') && !!svgEl.querySelector('g[data-camera-axes]'),
+          noAnimates: plot.getElementsByTagName('animateTransform').length === 0,
+          s0, sMid, labelMoved: y0 !== yMid,
+          idempotent: before === 1 && after === 1,
+        };
+      }
+    """ % CAMERA_SVG.replace('`', ''))
+    check('camera export: static scaffold (wrap + axes), no SMIL animates',
+          r['scaffolded'] and r['noAnimates'], str(r))
+    check('camera export: wide scale ≈ 1, summit scale > 1 (eased push-in)',
+          abs(r['s0'] - 1) < 0.01 and r['sMid'] > 1.2, str(r))
+    check('camera export: anchored label position moves between frames', r['labelMoved'], str(r))
+    check('camera export: setupCamera idempotent', r['idempotent'], str(r))
+
+
+def test_unit_split_trace(page):
+    # §2 split-draw (camera.js): one stroke, two dashoffset ramps with a freeze
+    # between — body draws to the dive, holds, then the tail finishes it.
+    r = page.evaluate("""
+      () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const mkGroup = () => new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '"><g id="ser">' +
+          '<path style="fill: none; stroke:red" d="M0,0 L50,50 L100,20"/></g></svg>',
+          'image/svg+xml').documentElement.querySelector('#ser');
+
+        // SMIL
+        const g1 = mkGroup();
+        const body = { begin: 0.8, dur: 2.0, spline: '0.33 1 0.68 1' };
+        const tail = { begin: 5.0, dur: 3.0, spline: '0.65 0 0.35 1' };
+        injectSplitTrace(g1, 0.7, body, tail);   // hold = 0.3
+        const p1 = g1.querySelector('path');
+        const anims = [...p1.getElementsByTagName('animate')];
+
+        // Export twin
+        const g2 = mkGroup();
+        setupSplitTrace(g2, 0.7, body, tail);
+        const p2 = g2.querySelector('path');
+        const at = t => { applySplitTraceAtTime(g2, t); return +p2.getAttribute('stroke-dashoffset'); };
+        const before = at(0.0);   // before body → fully hidden (1)
+        const held   = at(4.0);   // between runs → frozen at hold (0.3)
+        const bodyEnd = at(2.8);  // body just finished → hold
+        const done   = at(9.0);   // after tail → drawn (0)
+
+        return {
+          pathLength: p1.getAttribute('pathLength'),
+          twoAnims: anims.length === 2,
+          bodyToHold: anims[0].getAttribute('from') === '1' && anims[0].getAttribute('to') === '0.3',
+          tailFromHold: anims[1].getAttribute('from') === '0.3' && anims[1].getAttribute('to') === '0',
+          before, held, bodyEnd, done,
+        };
+      }
+    """)
+    check('split-trace SMIL: pathLength=1, two dashoffset animates', r['pathLength'] == '1' and r['twoAnims'], str(r))
+    check('split-trace SMIL: body 1→hold(0.3), tail hold→0',
+          r['bodyToHold'] and r['tailFromHold'], str(r))
+    check('split-trace export: hidden before, frozen at hold between, drawn after',
+          r['before'] == 1 and abs(r['held'] - 0.3) < 1e-6 and abs(r['bodyEnd'] - 0.3) < 1e-6
+          and r['done'] == 0, str(r))
+
+
 def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -891,6 +1444,19 @@ def main():
 
         for test in (
             test_load_and_detection,
+            test_unit_embed_fonts,
+            test_unit_trace_preview,
+            test_unit_trace_export,
+            test_unit_dots_line_vs_scatter,
+            test_unit_bubble_up_preview,
+            test_unit_bubble_up_word_mode,
+            test_unit_bubble_up_export,
+            test_unit_camera_frame_math,
+            test_unit_camera_extraction,
+            test_unit_camera_plan,
+            test_unit_camera_inject_smil,
+            test_unit_camera_export,
+            test_unit_split_trace,
             test_detection_per_chart,
             test_unit_translate_y,
             test_unit_positive_direct_rects,
@@ -908,7 +1474,7 @@ def main():
             test_synthesis_stacked,
             test_synthesis_leaves_others_untouched,
             test_queue_all,
-            test_title_footer_hiding,
+            test_header_queue_and_footer_hide,
             test_preview,
             test_overhang_validation,
             test_animated_svg_export_structure,
@@ -917,6 +1483,7 @@ def main():
             test_wipe_preview_smil_geometry,
             test_wipe_capture_animates,
             test_capture_frames,
+            test_camera_capture_end_to_end,
             test_transparent_capture,
             test_background_rect_detection,
         ):
