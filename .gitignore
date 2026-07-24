@@ -12,3 +12,34 @@ node_modules/
 # large / generated export artifacts — regenerate with scratch_folder/capture_frames.mjs
 *.mov
 scratch_folder/frames/
+
+# Rendered video masters. `*.mov` alone was not enough: the fill/key delivery path
+# (scratch_folder/export_fillkey.py) emits DNxHR-in-MXF, and a `git add -A` here
+# would have staged 1.8GB across 46 files — every one over GitHub's 100MB limit,
+# so the push fails *after* the objects are in local history and needs a rewrite
+# to undo. All of it is regenerable from the SVG masters; none of it belongs in git.
+*.mxf
+exports/
+scratch_folder/mxf-hive-test/
+
+# Personal resume bookmark (save-point skill) — not project docs
+SAVE-POINT.md
+
+# Stray local artefacts — one-off experiment output and a screenshot, kept on
+# disk for reference but not part of the app. Nothing here is needed to run,
+# build or understand the tool.
+samples/
+Screenshot*.png
+
+# Pilot outputs with the licensed Knowledge woffs inlined as data: URIs.
+# fonts/ is ignored above to keep those files out of this public repo; these
+# are the same bytes in base64, so they must be ignored too. Regenerate with
+# scratch_folder/pilot_line_charts.py (tracked — it reads fonts/ at build time).
+#
+# Widened 2026-07-23: the old rules were name-specific (EDITED_chart*,
+# EDITED_camera_*, ...), so any new hand-animation output under a different
+# name would have been tracked — and carried the font bytes into a public
+# repo. Match the whole class instead.
+scratch_folder/EDITED_*.svg
+scratch_folder/*_preview.html
+scratch_folder/*_artifact.html
