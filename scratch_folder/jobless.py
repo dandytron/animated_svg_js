@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Hand-animated cinematic treatment for the US jobless claims line chart.
+"""Reference example — a per-chart build script, not a reusable tool.
+
+Hand-animated cinematic treatment for the US jobless claims line chart. One-off:
+it hard-codes this chart's ids, coordinates and timeline and runs only on its
+own source SVG. The reusable logic lives in cinematic.py; read this to see how
+the pieces compose end to end for one real chart.
 
 Source: cJMcQ-us-jobless-benefits-filings-near-six-decade-low-
 

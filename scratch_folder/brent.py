@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Hand-animated cinematic treatment for the Brent crude line chart.
+"""Reference example — a per-chart build script, not a reusable tool.
+
+Hand-animated cinematic treatment for the Brent crude line chart. One-off: it
+hard-codes this chart's ids, coordinates and timeline and runs only on its own
+source SVG. The reusable logic lives in cinematic.py; read this to see how the
+pieces compose end to end for one real chart.
 
 Source: wrw0t-brent-crude-futures-crossed-100-per-barrel-after-almost-two-months-
 
