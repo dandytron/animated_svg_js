@@ -1328,6 +1328,7 @@ def test_unit_camera_extraction(page):
             firstFinite: Number.isFinite(pts[0][0]) && Number.isFinite(pts[0][1]),
             nX: ticks.x.length, nY: ticks.y.length,
             tickHasText: ticks.x.every(t => t.text) && ticks.y.every(t => t.text),
+            tickHasAppearance: ticks.y.every(t => t.fill && t.fontSize > 0 && t.weight && t.family),
             stage,
             stageSane: stage[0] === 0 && stage[2] > 600 && stage[1] > 0
                        && stage[1] + stage[3] <= 443.5 && stage[3] > 0,
@@ -1341,6 +1342,8 @@ def test_unit_camera_extraction(page):
     check('camera extract: line path → many root-space points', r['nPts'] > 20 and r['firstFinite'], str(r))
     check('camera extract: x and y ticks parsed with text',
           r['nX'] > 0 and r['nY'] > 0 and r['tickHasText'], str(r))
+    check('camera extract: ticks carry source appearance (fill/size/weight/family)',
+          r['tickHasAppearance'], str(r))
     check('camera extract: stage is full-width, within canvas height', r['stageSane'], str(r['stage']))
     check('camera extract: extractors never mutate the SVG (read-only)', r['readOnly'], str(r))
     check('camera extract: idempotent — repeat calls identical', r['stable'], str(r))
@@ -1398,7 +1401,9 @@ def test_unit_camera_inject_smil(page):
           '</g></svg>', 'image/svg+xml').documentElement;
 
         const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
-        const ticks  = { y:[{x:0,y:40,text:'30'}], x:[{x:100,y:250,text:'Jan'}] };
+        const ticks  = {
+          y:[{x:0,y:40,text:'30',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}],
+          x:[{x:100,y:250,text:'Jan',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}] };
         const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
         injectCameraSMIL(svgEl, plan);
 
@@ -1427,6 +1432,10 @@ def test_unit_camera_inject_smil(page):
             && gridLines[2].getElementsByTagName('animate').length === 0,
           axisLabels: svgEl.querySelector('g[data-camera-axes]')
             ? svgEl.querySelector('g[data-camera-axes]').getElementsByTagName('text').length : 0,
+          labelFill: (svgEl.querySelector('g[data-camera-axes] text') || {}).getAttribute
+            ? svgEl.querySelector('g[data-camera-axes] text').getAttribute('fill') : null,
+          labelSize: (svgEl.querySelector('g[data-camera-axes] text') || {}).getAttribute
+            ? svgEl.querySelector('g[data-camera-axes] text').getAttribute('font-size') : null,
           idempotent: before === 1 && after === 1,
         };
       }
@@ -1443,6 +1452,8 @@ def test_unit_camera_inject_smil(page):
     check('camera SMIL: true vertical rule is skipped (orientation guard)',
           r['verticalSkipped'], str(r))
     check('camera SMIL: anchored axis labels rebuilt (y + x)', r['axisLabels'] == 2, str(r))
+    check('camera SMIL: rebuilt labels use the source appearance, not hard-coded white/13',
+          r['labelFill'] == 'rgb(134,134,134)' and r['labelSize'] == '14', str(r))
     check('camera SMIL: idempotent — re-run does not double-wrap', r['idempotent'], str(r))
 
 
@@ -1466,7 +1477,9 @@ def test_unit_camera_export(page):
       () => {
         const svgEl = new DOMParser().parseFromString(`%s`, 'image/svg+xml').documentElement;
         const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
-        const ticks  = { y:[{x:0,y:40,text:'30'}], x:[{x:100,y:250,text:'Jan'}] };
+        const ticks  = {
+          y:[{x:0,y:40,text:'30',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}],
+          x:[{x:100,y:250,text:'Jan',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}] };
         const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
         setupCamera(svgEl, plan);
         const plot = svgEl.querySelector('[id="svg-main-svg"]');
@@ -1496,6 +1509,8 @@ def test_unit_camera_export(page):
           baselineNonScaling: gridLines[1].getAttribute('vector-effect') === 'non-scaling-stroke',
           baselineTrimsX2: baseTrimmedAtSetup,
           verticalSkipped: gridLines[2].getAttribute('vector-effect') !== 'non-scaling-stroke',
+          labelFill: yLabel.getAttribute('fill'),
+          labelSize: yLabel.getAttribute('font-size'),
           idempotent: before === 1 && after === 1,
         };
       }
@@ -1509,6 +1524,8 @@ def test_unit_camera_export(page):
           r['baselineNonScaling'] and r['baselineTrimsX2'], str(r))
     check('camera export: true vertical rule is skipped (orientation guard)',
           r['verticalSkipped'], str(r))
+    check('camera export: rebuilt labels use source appearance, not hard-coded white/13',
+          r['labelFill'] == 'rgb(134,134,134)' and r['labelSize'] == '14', str(r))
     check('camera export: setupCamera idempotent', r['idempotent'], str(r))
 
 
