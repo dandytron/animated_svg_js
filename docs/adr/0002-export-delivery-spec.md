@@ -1,7 +1,9 @@
 # ADR 0002 — Export delivery spec: presets, frame rates, resolution
 
 **Status:** Accepted  
-**Date:** 2026-05-25
+**Date:** 2026-05-25  
+**Update 2026-07-20:** NTSC is the default frame rate; presets need short-edge
+width semantics for vertical. See the update section at the foot.
 
 ## Context
 
@@ -51,3 +53,24 @@ Formats not yet implemented but worth revisiting as distribution targets evolve:
   supports both containers
 - **Custom resolution** — a "Custom…" preset opening a resolution input, for non-standard
   delivery specs
+
+## Update (2026-07-20) — defaults and vertical, from the ProRes pilot
+
+Exporting the China oil chart (`scratch_folder/export_prores.py`, a Playwright +
+`prores_ks` twin of `capture_frames.mjs`) resolved two things the original spec
+left open:
+
+- **NTSC is the default.** The preset table lists PAL and NTSC side by side with
+  no default marked, which led to a wrong-guess PAL render. Default is now
+  **NTSC (29.97 = `30000/1001`)**; PAL only on request.
+- **Preset widths assume landscape.** "1080p → 1920px canvas width" put 1920 on
+  the **long** edge of a 9:16 source and produced 1920×3414. Presets should carry
+  the **short-edge** width (so 1080p means 1080 on the narrow side regardless of
+  orientation), or ship a separate vertical preset family. Current workaround: a
+  `--width` override.
+- **Round durations overshoot in NTSC.** 10s × 29.97 = 299.7 frames → 300 →
+  **10.010s**. A whole-second duration is never exact at 29.97. Pick a house rule
+  (round frames up vs down) and surface the real duration rather than trimming.
+- **Datawrapper canvases aren't exactly 16:9.** The 838×473 export scales to
+  1920×**1084**, not 1080. Fine over alpha; only matters if a delivery spec
+  demands exact 1920×1080, in which case pad rather than distort.
