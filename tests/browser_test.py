@@ -1497,6 +1497,9 @@ def test_unit_camera_export(page):
         const s0 = scaleOf(), y0 = yLabel.getAttribute('y');
         applyCameraAtTime(svgEl, plan, 4.8);    // ~summit (keytimes .46–.50)
         const sMid = scaleOf(), yMid = yLabel.getAttribute('y');
+        // Per-frame driver must trim the baseline's LEFT end (x2), leaving its
+        // right end (x1) intact — else the RTL baseline collapses on export.
+        const baseRightIntactPerFrame = gridLines[1].getAttribute('x1') === '300';
 
         const before = svgEl.querySelectorAll('g[data-camera]').length;
         setupCamera(svgEl, plan);               // idempotency
@@ -1508,6 +1511,7 @@ def test_unit_camera_export(page):
           s0, sMid, labelMoved: y0 !== yMid,
           baselineNonScaling: gridLines[1].getAttribute('vector-effect') === 'non-scaling-stroke',
           baselineTrimsX2: baseTrimmedAtSetup,
+          baseRightIntactPerFrame,
           verticalSkipped: gridLines[2].getAttribute('vector-effect') !== 'non-scaling-stroke',
           labelFill: yLabel.getAttribute('fill'),
           labelSize: yLabel.getAttribute('font-size'),
@@ -1522,6 +1526,8 @@ def test_unit_camera_export(page):
     check('camera export: anchored label position moves between frames', r['labelMoved'], str(r))
     check('camera export: RTL baseline non-scaling + left end (x2) trimmed to gutter',
           r['baselineNonScaling'] and r['baselineTrimsX2'], str(r))
+    check('camera export: per-frame driver keeps the baseline right end (x1), trims left',
+          r['baseRightIntactPerFrame'], str(r))
     check('camera export: true vertical rule is skipped (orientation guard)',
           r['verticalSkipped'], str(r))
     check('camera export: rebuilt labels use source appearance, not hard-coded white/13',
