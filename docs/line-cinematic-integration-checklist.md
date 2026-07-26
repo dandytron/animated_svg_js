@@ -38,6 +38,17 @@ verified to survive frame-capture export — the ProRes came out of exactly this
   layout, measurement, split, or camera. Not a final styling pass.
   Prototype: `pilot_line_charts.py::_font_face_css`, `restyle`.
 
+- [ ] **Stamp a viewBox before anything scales the SVG — font-first's twin.**
+  Datawrapper ships `width`/`height` and **no `viewBox`**. Setting a CSS/attr
+  width on a viewBox-less SVG resizes the viewport but not the coordinate space,
+  so the chart renders at intrinsic size in the **top-left quadrant** of the
+  frame — silent, and it shipped a broken render during a live delivery. The
+  tool's `app.js` already stamps on injection and `export.js` before setting
+  width/height; the trap is a path that scales *without* going through those
+  (a standalone exporter, or a no-camera chart that never triggered the camera's
+  stamp as a side effect). Reference: `export_prores.py::ensure_viewbox` — stamp
+  `0 0 W H` when absent, idempotent so it never clobbers an expanded pad viewBox.
+
 ---
 
 ## 1. Line paint-on — two techniques, chosen by detection  · ADR 0008 #1
@@ -143,6 +154,29 @@ verified to survive frame-capture export — the ProRes came out of exactly this
   frame; the scale-and-centre reframe filled ~32% with landscape line breaks. The
   whole pipeline runs unchanged on the portrait source — it just needs its own
   stage band, offsets and tick set. Prototype: `pilot_pages.py` chart `01v`.
+
+## 8. Compositing / transparent export  · ADR 0009
+
+The steps that turn an animated chart into something that composites over
+footage. Full rationale in ADR 0009; the checklist items:
+
+- [ ] **Drop the plate, then whiten + `feDropShadow` the CHROME ONLY** — title,
+  subtitle, legend label, credits, callout. **Never** the axis ticks,
+  gridlines, series, or a coloured value label. The pilot's `restyle` whitens
+  *everything*, which is correct for a light source and destroys a dark one.
+  Gate on source theme. Prototype: `cinematic.py::shadow_between` (scoped by
+  DOM slice — the port should select by role/id, not string offsets).
+- [ ] **Lift gridlines, and prefer a drop shadow over brightness** — a light
+  line vanishes over a light-grey bed; a shadowed line reads over any ground.
+  `cinematic.py::recolor_strokes`.
+- [ ] **5% pad via viewBox expansion, not width/height** — insets content,
+  preserves aspect and export dimensions. After any viewBox stamp (§0), never
+  before. `cinematic.py::pad_viewbox`.
+- [ ] **Judge proxies over the target ground, not black** (ADR 0008 §8).
+- [ ] **Fill/key for Hive** — Hive rejects the `.mov` wrapper; DNxHR-in-MXF has
+  no alpha, so split into FILL (colour over black) + KEY (luma matte). FILL
+  alone = opaque black; FILL+KEY = transparent. DNxHR HQX / yuv422p10le / MXF /
+  30000÷1001. `export_fillkey.py`.
 
 ---
 
@@ -255,14 +289,16 @@ inside Datawrapper's header container.
 
 ## Repo hygiene / deployment
 
-- **`.gitignore` has an uncommitted font-licensing hardening** (widens the
-  ignore rules so pilot outputs carrying inlined Knowledge `.woff` bytes can't
-  reach this public repo). Unrelated to the port, but worth committing — without
-  it a new hand-animation output under an unmatched name would be tracked.
+- **Font-licensing `.gitignore` hardening — committed.** The ignore rules now
+  match the whole class of hand-animation output (`EDITED_*.svg` etc.) plus the
+  rendered `*.mxf` masters, so nothing carrying inlined Knowledge `.woff` bytes,
+  and no 200MB+ video, can reach this public repo.
 - **`fonts/` is gitignored and untracked** (licensed face), so `embedFonts`
-  fetches at runtime and **gracefully no-ops wherever the fonts aren't present**
-  (fresh clone, CI, public deploy) — text falls back rather than breaking. The
-  real face only renders where `fonts/` exists on disk.
-- ADR 0002 carries uncommitted 2026-07-20 notes covering the §6 findings (NTSC
-  default, short-edge vertical widths, round-duration overshoot). Pick those up
-  with §6 rather than re-deriving them.
+  fetches at runtime and **no-ops wherever the fonts aren't present** (fresh
+  clone, CI, public deploy) — text falls back rather than breaking. Note this is
+  self-consistent in *preview* but not in *export*: a blob-URL raster is an
+  isolated document, so once fonts deploy, a lost `document.fonts` race measures
+  in the fallback and renders in Knowledge → §0 mismatch. Force the load before
+  measuring (`document.fonts.load(...)` before `.ready`). Tracked for PR B.
+- **ADR 0002's 2026-07-20 notes — adopted** (NTSC default, short-edge vertical
+  widths, round-duration overshoot). No longer uncommitted; see ADR 0002.
