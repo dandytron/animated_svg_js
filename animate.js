@@ -384,7 +384,7 @@ async function measureBubbleUnits(svgEl, config) {
   document.body.appendChild(host);
   const live = host.querySelector('svg');
   try {
-    if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch {} }
+    await ensureFontsLoaded();  // request the real faces, then await — not ready alone (fonts.js)
     const out = {};
     for (const elem of targets) {
       const group = live.querySelector(`[id="${_esc(elem.group_id)}"]`);

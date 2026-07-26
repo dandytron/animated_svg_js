@@ -1005,6 +1005,37 @@ def test_unit_embed_fonts(page):
     check('embedFonts: creates <defs> when absent', r['madeDefs'], str(r))
 
 
+def test_unit_ensure_fonts_loaded(page):
+    # measureBubbleUnits / computeCameraPlan must FORCE the embedded face to load
+    # before measuring glyphs. document.fonts.ready alone resolves before an
+    # inserted @font-face has been requested, so measurement can fall to the
+    # fallback face (27% wider, §0). ensureFontsLoaded() requests the real faces
+    # first. Proxy test: the function exists and, given an embedded face in the
+    # document, leaves it loaded (a full race repro would be flaky).
+    page.goto(BASE)
+    r = page.evaluate("""
+      async () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const dw = new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '"><defs/>' +
+          '<text style="font-family: Knowledge; font-weight: 700;">hi</text></svg>',
+          'image/svg+xml').documentElement;
+        await embedFonts(dw);                         // inline the @font-face
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;left:-99999px;top:0';
+        host.appendChild(dw);
+        document.body.appendChild(host);              // register the face
+        try {
+          const hasFn = typeof ensureFontsLoaded === 'function';
+          await ensureFontsLoaded();
+          return { hasFn, loaded: document.fonts.check('700 21px Knowledge') };
+        } finally { document.body.removeChild(host); }
+      }
+    """)
+    check('ensureFontsLoaded: exists and forces the real face to load before measuring',
+          r['hasFn'] and r['loaded'], str(r))
+
+
 def test_unit_embed_fonts_partial(page):
     # allSettled, not all: if one weight's woff 404s, the others must still
     # embed. Old Promise.all rejected the whole build on a single failure, so
@@ -1551,6 +1582,7 @@ def main():
             test_transparent_capture,
             test_background_rect_detection,
             test_unit_embed_fonts_partial,
+            test_unit_ensure_fonts_loaded,
         ):
             print(f'\n── {test.__name__} ──')
             try:

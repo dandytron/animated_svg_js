@@ -73,6 +73,24 @@ function loadFontCss() {
   return _fontCssPromise;
 }
 
+// Force the embedded faces to actually load before any glyph measurement.
+// `document.fonts.ready` alone is not enough: it resolves when *pending* loads
+// settle, but inserting an @font-face starts no load until something lays out
+// text in it — and nothing forces layout between appending the measurement host
+// and the await. On a cold font cache the await then resolves against the
+// FALLBACK face, getStartPositionOfChar measures ~27% too wide, and every
+// bubble-up letter is pinned to the wrong spot (§0 failure mode #3). Requesting
+// the faces explicitly makes the load pending, so the subsequent ready await is
+// real. Harmless when fonts aren't present (load rejects; we swallow it).
+async function ensureFontsLoaded() {
+  if (!document.fonts || !document.fonts.load) return;
+  try {
+    await Promise.all(FONT_FACES.map(({ weight, family }) =>
+      document.fonts.load(`${weight} 21px ${family}`).catch(() => {})));
+    if (document.fonts.ready) await document.fonts.ready;
+  } catch { /* best-effort — never block a build on font loading */ }
+}
+
 // True when svgEl references a family we can embed. Gates embedFonts so SVGs
 // that never name Knowledge stay lean (embedding is ~147KB). Datawrapper writes
 // the family into inline styles; the camera/vertical prototypes use the

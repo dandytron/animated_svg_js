@@ -599,7 +599,7 @@ async function computeCameraPlan(svgEl, config) {
   document.body.appendChild(host);
   const live = host.querySelector('svg');
   try {
-    if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch {} }
+    await ensureFontsLoaded();  // request the real faces, then await — not ready alone (fonts.js)
     // Follow an explicit line, else the first stroked line, else a dots-line.
     let points = [], splitLineId = null;
     const linePath = config.camera.line_id
