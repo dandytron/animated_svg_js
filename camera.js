@@ -313,12 +313,18 @@ function injectCameraSMIL(svgEl, plan, opts = {}) {
   }
 
   // Gridlines: hold their weight (non-scaling-stroke), trim to the gutter. Skip
-  // vertical rules (x2="0"); scope to the plot subtree so the legend swatch line
-  // isn't stretched across the chart.
+  // *vertical* rules by orientation (y1!==y2) — the old `x2==="0"` guard instead
+  // skipped the zero baseline, which Datawrapper draws right-to-left (x1=width,
+  // x2=0), so the most prominent rule ballooned to ~2.8px at zoom among 1px
+  // hairlines. Trim the actual left endpoint (min of x1/x2), so an RTL-drawn
+  // rule trims from the same side as the others. Scoped to the plot subtree so
+  // the legend swatch line isn't stretched across the chart.
   for (const line of plot.querySelectorAll('line')) {
-    if (line.getAttribute('x2') === '0') continue;
+    const num = a => parseFloat(line.getAttribute(a)) || 0;
+    if (num('y1') !== num('y2')) continue;
     line.setAttribute('vector-effect', 'non-scaling-stroke');
-    line.appendChild(_camAnim('x1', plan.gridStarts.map(_round2), plan));
+    line.appendChild(_camAnim(num('x1') <= num('x2') ? 'x1' : 'x2',
+                              plan.gridStarts.map(_round2), plan));
   }
 
   // Anchored axis labels — outside the transformed group, so they hold their
@@ -443,9 +449,10 @@ function setupCamera(svgEl, plan, opts = {}) {
     if (g) g.setAttribute('opacity', '0');
   }
   for (const line of plot.querySelectorAll('line')) {
-    if (line.getAttribute('x2') === '0') continue;
+    const num = a => parseFloat(line.getAttribute(a)) || 0;
+    if (num('y1') !== num('y2')) continue;   // skip vertical rules by orientation
     line.setAttribute('vector-effect', 'non-scaling-stroke');
-    line.setAttribute('x1', plan.gridStarts[0]);
+    line.setAttribute(num('x1') <= num('x2') ? 'x1' : 'x2', plan.gridStarts[0]);
     line.setAttribute('data-cam-grid', '');
   }
 

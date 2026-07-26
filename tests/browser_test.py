@@ -1388,7 +1388,9 @@ def test_unit_camera_inject_smil(page):
           '<svg xmlns="' + NS + '" width="400" height="300">' +
           '<g id="svg-main-svg" transform="translate(0,50)">' +
             '<g id="group-svg" transform="translate(20,0)">' +
-              '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/></g>' +
+              '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/>' +
+                  '<line x1="300" x2="0" y1="20" y2="20"/>' +
+                  '<line x1="5" x2="5" y1="0" y2="30"/></g>' +
             '</g>' +
             '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>' +
             '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>' +
@@ -1402,7 +1404,9 @@ def test_unit_camera_inject_smil(page):
 
         const plot = svgEl.querySelector('[id="svg-main-svg"]');
         const wrap = svgEl.querySelector('g[data-camera]');
-        const line = svgEl.querySelector('[id="y-grid-lines-svg"] line');
+        const gridLines = [...svgEl.querySelectorAll('[id="y-grid-lines-svg"] line')];
+        const line = gridLines[0];                 // LTR gridline
+        const baseAnim = gridLines[1].getElementsByTagName('animate')[0];  // RTL baseline
         const before = svgEl.querySelectorAll('g[data-camera]').length;
         injectCameraSMIL(svgEl, plan);   // idempotency
         const after = svgEl.querySelectorAll('g[data-camera]').length;
@@ -1417,6 +1421,10 @@ def test_unit_camera_inject_smil(page):
           origXHidden: svgEl.querySelector('[id="x-tick-labels-svg"]').getAttribute('opacity') === '0',
           gridNonScaling: line.getAttribute('vector-effect') === 'non-scaling-stroke',
           gridAnimated: line.getElementsByTagName('animate').length === 1,
+          baselineNonScaling: gridLines[1].getAttribute('vector-effect') === 'non-scaling-stroke',
+          baselineTrimsX2: !!baseAnim && baseAnim.getAttribute('attributeName') === 'x2',
+          verticalSkipped: gridLines[2].getAttribute('vector-effect') !== 'non-scaling-stroke'
+            && gridLines[2].getElementsByTagName('animate').length === 0,
           axisLabels: svgEl.querySelector('g[data-camera-axes]')
             ? svgEl.querySelector('g[data-camera-axes]').getElementsByTagName('text').length : 0,
           idempotent: before === 1 && after === 1,
@@ -1430,6 +1438,10 @@ def test_unit_camera_inject_smil(page):
     check('camera SMIL: original tick labels hidden', r['origYHidden'] and r['origXHidden'], str(r))
     check('camera SMIL: gridline non-scaling-stroke + x1 trim animate',
           r['gridNonScaling'] and r['gridAnimated'], str(r))
+    check('camera SMIL: RTL-drawn zero baseline also non-scaling, trims its left end (x2)',
+          r['baselineNonScaling'] and r['baselineTrimsX2'], str(r))
+    check('camera SMIL: true vertical rule is skipped (orientation guard)',
+          r['verticalSkipped'], str(r))
     check('camera SMIL: anchored axis labels rebuilt (y + x)', r['axisLabels'] == 2, str(r))
     check('camera SMIL: idempotent — re-run does not double-wrap', r['idempotent'], str(r))
 
@@ -1437,7 +1449,9 @@ def test_unit_camera_inject_smil(page):
 CAMERA_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">'
               '<g id="svg-main-svg" transform="translate(0,50)">'
                 '<g id="group-svg" transform="translate(20,0)">'
-                  '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/></g>'
+                  '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/>'
+                  '<line x1="300" x2="0" y1="20" y2="20"/>'
+                  '<line x1="5" x2="5" y1="0" y2="30"/></g>'
                 '</g>'
                 '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>'
                 '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>'
@@ -1456,6 +1470,13 @@ def test_unit_camera_export(page):
         const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
         setupCamera(svgEl, plan);
         const plot = svgEl.querySelector('[id="svg-main-svg"]');
+        const gridLines = [...svgEl.querySelectorAll('[id="y-grid-lines-svg"] line')];
+        // Capture the static trim right after setupCamera — applyCameraAtTime
+        // below re-trims per frame (gridStarts is per-keyframe), so reading at
+        // the end would see an animated value, not the scaffold's left-end trim.
+        const baseTrimmedAtSetup =
+          gridLines[1].getAttribute('x2') === String(plan.gridStarts[0])
+          && gridLines[1].getAttribute('x1') === '300';
         const scaleOf = () => parseFloat((plot.getAttribute('transform').match(/scale\\(([-\\d.]+)/) || [])[1]);
         const yLabel = svgEl.querySelector('text[data-cam-yi]');
 
@@ -1472,6 +1493,9 @@ def test_unit_camera_export(page):
           scaffolded: !!svgEl.querySelector('g[data-camera]') && !!svgEl.querySelector('g[data-camera-axes]'),
           noAnimates: plot.getElementsByTagName('animateTransform').length === 0,
           s0, sMid, labelMoved: y0 !== yMid,
+          baselineNonScaling: gridLines[1].getAttribute('vector-effect') === 'non-scaling-stroke',
+          baselineTrimsX2: baseTrimmedAtSetup,
+          verticalSkipped: gridLines[2].getAttribute('vector-effect') !== 'non-scaling-stroke',
           idempotent: before === 1 && after === 1,
         };
       }
@@ -1481,6 +1505,10 @@ def test_unit_camera_export(page):
     check('camera export: wide scale ≈ 1, summit scale > 1 (eased push-in)',
           abs(r['s0'] - 1) < 0.01 and r['sMid'] > 1.2, str(r))
     check('camera export: anchored label position moves between frames', r['labelMoved'], str(r))
+    check('camera export: RTL baseline non-scaling + left end (x2) trimmed to gutter',
+          r['baselineNonScaling'] and r['baselineTrimsX2'], str(r))
+    check('camera export: true vertical rule is skipped (orientation guard)',
+          r['verticalSkipped'], str(r))
     check('camera export: setupCamera idempotent', r['idempotent'], str(r))
 
 
