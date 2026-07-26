@@ -46,9 +46,30 @@ def natural_size(svg_text):
     return w, h
 
 
+def ensure_viewbox(svg_text, w, h):
+    """Stamp a viewBox if the SVG lacks one, so CSS scaling actually scales.
+
+    Datawrapper ships width/height and NO viewBox. Setting `svg{width:1920px}`
+    on such an SVG resizes the viewport but not the coordinate space, so the
+    chart renders at its intrinsic size in the top-left quadrant of the frame —
+    a silent, easy-to-miss failure (it bit a live delivery this session).
+
+    A viewBox equal to the intrinsic box makes width/height a true scale.
+    Idempotent: no-op when a viewBox is already present (e.g. cinematic.py has
+    already stamped it, or expanded it for 5% pad — which we must not clobber).
+    """
+    import re
+    if re.search(r'<svg[^>]*\bviewBox=', svg_text):
+        return svg_text
+    print(f"  note: source has no viewBox — stamping 0 0 {w:.0f} {h:.0f} "
+          "(without it the chart renders in the top-left quadrant)")
+    return re.sub(r'(<svg\b)', rf'\1 viewBox="0 0 {w:.0f} {h:.0f}"', svg_text, count=1)
+
+
 def capture(svg_path, out_dir, fps, out_w, duration):
     svg_text = svg_path.read_text()
     nat_w, nat_h = natural_size(svg_text)
+    svg_text = ensure_viewbox(svg_text, nat_w, nat_h)
     scale = out_w / nat_w
     # Encoders need even dimensions.
     out_h = int(round(nat_h * scale / 2)) * 2
