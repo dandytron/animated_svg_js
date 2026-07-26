@@ -989,19 +989,53 @@ def test_unit_embed_fonts(page):
         return {
           hasStyle: !!style,
           faceCount: (css.match(/@font-face/g) || []).length,
-          weights: [300, 400, 700].every(w => css.includes('font-weight:' + w)),
+          weights: [300, 700].every(w => css.includes('font-weight:' + w)),
+          no400: !css.includes('font-weight:400'),
           dataUri: css.includes('src:url(data:font/woff;base64,'),
           styleCount, plainUnchanged, madeDefs,
         };
       }
     """)
     check('embedFonts: injects a marked <style> into defs', r['hasStyle'], str(r))
-    check('embedFonts: three @font-face rules (300/400/700)',
-          r['faceCount'] == 3 and r['weights'], str(r))
+    check('embedFonts: two @font-face rules (300/700, no dead 400)',
+          r['faceCount'] == 2 and r['weights'] and r['no400'], str(r))
     check('embedFonts: woff inlined as base64 data-URI', r['dataUri'], str(r))
     check('embedFonts: idempotent — one <style> after two passes', r['styleCount'] == 1, str(r))
     check('embedFonts: gated — SVG without Knowledge is byte-identical', r['plainUnchanged'], str(r))
     check('embedFonts: creates <defs> when absent', r['madeDefs'], str(r))
+
+
+def test_unit_embed_fonts_partial(page):
+    # allSettled, not all: if one weight's woff 404s, the others must still
+    # embed. Old Promise.all rejected the whole build on a single failure, so
+    # NOTHING embedded. Fresh page.goto = fresh module (null CSS cache) so the
+    # fetch stub takes effect; the trailing reload clears the stub + partial
+    # cache before later tests run.
+    page.goto(BASE)
+    r = page.evaluate("""
+      async () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const real = window.fetch;
+        window.fetch = (u, o) => String(u).includes('Bold')
+          ? Promise.resolve(new Response('', { status: 404 }))
+          : real(u, o);
+        const dw = new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '"><defs/><text style="font-family: Knowledge;">hi</text></svg>',
+          'image/svg+xml').documentElement;
+        await embedFonts(dw);
+        const css = (dw.querySelector('style[data-embedded-fonts]') || {}).textContent || '';
+        window.fetch = real;
+        return {
+          faceCount: (css.match(/@font-face/g) || []).length,
+          has300: css.includes('font-weight:300'),
+          has700: css.includes('font-weight:700'),
+        };
+      }
+    """)
+    page.goto(BASE)  # discard the stubbed fetch and the partial-CSS cache
+    check('embedFonts: a failed weight degrades that weight only (allSettled) — '
+          '300 still embeds when 700 404s',
+          r['faceCount'] == 1 and r['has300'] and not r['has700'], str(r))
 
 
 def test_unit_trace_preview(page):
@@ -1516,6 +1550,7 @@ def main():
             test_camera_capture_end_to_end,
             test_transparent_capture,
             test_background_rect_detection,
+            test_unit_embed_fonts_partial,
         ):
             print(f'\n── {test.__name__} ──')
             try:
