@@ -469,8 +469,12 @@ function setupCamera(svgEl, plan, opts = {}) {
     const num = a => parseFloat(line.getAttribute(a)) || 0;
     if (num('y1') !== num('y2')) continue;   // skip vertical rules by orientation
     line.setAttribute('vector-effect', 'non-scaling-stroke');
-    line.setAttribute(num('x1') <= num('x2') ? 'x1' : 'x2', plan.gridStarts[0]);
-    line.setAttribute('data-cam-grid', '');
+    const leftAttr = num('x1') <= num('x2') ? 'x1' : 'x2';
+    line.setAttribute(leftAttr, plan.gridStarts[0]);
+    // Record WHICH endpoint is the left one, so applyCameraAtTime trims the same
+    // one per frame. The RTL-drawn baseline's left end is x2; without this the
+    // per-frame driver would collapse its x1 (right end) and the baseline vanishes.
+    line.setAttribute('data-cam-grid', leftAttr);
   }
 
   const labels = _cel('g');
@@ -514,7 +518,11 @@ function applyCameraAtTime(svgEl, plan, t) {
     plot.setAttribute('transform',
       `translate(${_round2(S(plan.tx, u))},${_round2(S(plan.ty, u))}) scale(${_round2(S(plan.scales, u))})`);
     const gx1 = _round2(S(plan.gridStarts, u));
-    for (const line of plot.querySelectorAll('line[data-cam-grid]')) line.setAttribute('x1', gx1);
+    // Trim the endpoint setupCamera recorded as the left one (x1 for normal
+    // rules, x2 for the RTL-drawn baseline) — not always x1, which would collapse
+    // the baseline's right end.
+    for (const line of plot.querySelectorAll('line[data-cam-grid]'))
+      line.setAttribute(line.getAttribute('data-cam-grid') || 'x1', gx1);
   }
   const axes = svgEl.querySelector('g[data-camera-axes]');
   if (!axes) return;
