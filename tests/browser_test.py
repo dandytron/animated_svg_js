@@ -524,6 +524,35 @@ def test_queue_all(page):
           not page.eval_on_selector('#queue-all-btn', 'el => el.disabled'))
 
 
+def test_camera_toggle_labels(page):
+    # Regression: the Camera and split-draw checkboxes were wrapped in ONE
+    # <label>, so a label's labeled control is only its first labelable
+    # descendant — clicking the "split-draw" text toggled Camera, and the
+    # split-draw box had no label of its own. Each must own its own label.
+    # Also checks syncCamera() ran at init so state matches the (unticked) DOM.
+    page.goto(BASE)
+    r = page.evaluate("""
+      () => {
+        const cam = document.getElementById('camera-toggle');
+        const split = document.getElementById('camera-split-toggle');
+        return {
+          camLabels: cam.labels.length,
+          splitLabels: split.labels.length,
+          distinct: cam.labels.length === 1 && split.labels.length === 1
+                    && cam.labels[0] !== split.labels[0],
+          stateCam: state.camera,
+          splitDisabled: split.disabled,
+        };
+      }
+    """)
+    check('camera labels: Camera checkbox owns exactly one label', r['camLabels'] == 1, str(r))
+    check('camera labels: split-draw owns its own label (not the Camera label)',
+          r['splitLabels'] == 1, str(r))
+    check('camera labels: the two checkboxes have distinct labels', r['distinct'], str(r))
+    check('camera init: syncCamera ran — state.camera null + split disabled on unticked load',
+          r['stateCam'] is None and r['splitDisabled'] is True, str(r))
+
+
 def test_header_queue_and_footer_hide(page):
     # §5: the header is now an animatable element, so clicking it QUEUES it for
     # bubble-up (was: hides it). The footer is still a click-to-hide target.
@@ -1474,6 +1503,7 @@ def main():
             test_synthesis_stacked,
             test_synthesis_leaves_others_untouched,
             test_queue_all,
+            test_camera_toggle_labels,
             test_header_queue_and_footer_hide,
             test_preview,
             test_overhang_validation,
