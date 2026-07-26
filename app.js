@@ -49,10 +49,14 @@ document.addEventListener('DOMContentLoaded', () => {
       ? { enabled: true, split_draw: splitToggle.checked, duration: +document.getElementById('total-duration').value }
       : null;
   };
-  splitToggle.disabled = true;
   camToggle.addEventListener('change', syncCamera);
   splitToggle.addEventListener('change', syncCamera);
   document.getElementById('total-duration').addEventListener('input', syncCamera);
+  // Sync state to the actual DOM at init: browsers restore checkbox state across
+  // a soft reload, so a page that loads with Camera already ticked must not leave
+  // state.camera null (and split-draw must be enabled to match). Replaces a bare
+  // `splitToggle.disabled = true` that assumed Camera always starts unchecked.
+  syncCamera();
   document.getElementById('queue-all-btn').addEventListener('click', queueAll);
   document.getElementById('preview-btn').addEventListener('click', preview);
   document.getElementById('export-btn').addEventListener('click', toggleExportMenu);

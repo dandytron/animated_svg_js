@@ -524,6 +524,35 @@ def test_queue_all(page):
           not page.eval_on_selector('#queue-all-btn', 'el => el.disabled'))
 
 
+def test_camera_toggle_labels(page):
+    # Regression: the Camera and split-draw checkboxes were wrapped in ONE
+    # <label>, so a label's labeled control is only its first labelable
+    # descendant — clicking the "split-draw" text toggled Camera, and the
+    # split-draw box had no label of its own. Each must own its own label.
+    # Also checks syncCamera() ran at init so state matches the (unticked) DOM.
+    page.goto(BASE)
+    r = page.evaluate("""
+      () => {
+        const cam = document.getElementById('camera-toggle');
+        const split = document.getElementById('camera-split-toggle');
+        return {
+          camLabels: cam.labels.length,
+          splitLabels: split.labels.length,
+          distinct: cam.labels.length === 1 && split.labels.length === 1
+                    && cam.labels[0] !== split.labels[0],
+          stateCam: state.camera,
+          splitDisabled: split.disabled,
+        };
+      }
+    """)
+    check('camera labels: Camera checkbox owns exactly one label', r['camLabels'] == 1, str(r))
+    check('camera labels: split-draw owns its own label (not the Camera label)',
+          r['splitLabels'] == 1, str(r))
+    check('camera labels: the two checkboxes have distinct labels', r['distinct'], str(r))
+    check('camera init: syncCamera ran — state.camera null + split disabled on unticked load',
+          r['stateCam'] is None and r['splitDisabled'] is True, str(r))
+
+
 def test_header_queue_and_footer_hide(page):
     # §5: the header is now an animatable element, so clicking it QUEUES it for
     # bubble-up (was: hides it). The footer is still a click-to-hide target.
@@ -960,19 +989,84 @@ def test_unit_embed_fonts(page):
         return {
           hasStyle: !!style,
           faceCount: (css.match(/@font-face/g) || []).length,
-          weights: [300, 400, 700].every(w => css.includes('font-weight:' + w)),
+          weights: [300, 700].every(w => css.includes('font-weight:' + w)),
+          no400: !css.includes('font-weight:400'),
           dataUri: css.includes('src:url(data:font/woff;base64,'),
           styleCount, plainUnchanged, madeDefs,
         };
       }
     """)
     check('embedFonts: injects a marked <style> into defs', r['hasStyle'], str(r))
-    check('embedFonts: three @font-face rules (300/400/700)',
-          r['faceCount'] == 3 and r['weights'], str(r))
+    check('embedFonts: two @font-face rules (300/700, no dead 400)',
+          r['faceCount'] == 2 and r['weights'] and r['no400'], str(r))
     check('embedFonts: woff inlined as base64 data-URI', r['dataUri'], str(r))
     check('embedFonts: idempotent — one <style> after two passes', r['styleCount'] == 1, str(r))
     check('embedFonts: gated — SVG without Knowledge is byte-identical', r['plainUnchanged'], str(r))
     check('embedFonts: creates <defs> when absent', r['madeDefs'], str(r))
+
+
+def test_unit_ensure_fonts_loaded(page):
+    # measureBubbleUnits / computeCameraPlan must FORCE the embedded face to load
+    # before measuring glyphs. document.fonts.ready alone resolves before an
+    # inserted @font-face has been requested, so measurement can fall to the
+    # fallback face (27% wider, §0). ensureFontsLoaded() requests the real faces
+    # first. Proxy test: the function exists and, given an embedded face in the
+    # document, leaves it loaded (a full race repro would be flaky).
+    page.goto(BASE)
+    r = page.evaluate("""
+      async () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const dw = new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '"><defs/>' +
+          '<text style="font-family: Knowledge; font-weight: 700;">hi</text></svg>',
+          'image/svg+xml').documentElement;
+        await embedFonts(dw);                         // inline the @font-face
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;left:-99999px;top:0';
+        host.appendChild(dw);
+        document.body.appendChild(host);              // register the face
+        try {
+          const hasFn = typeof ensureFontsLoaded === 'function';
+          await ensureFontsLoaded();
+          return { hasFn, loaded: document.fonts.check('700 21px Knowledge') };
+        } finally { document.body.removeChild(host); }
+      }
+    """)
+    check('ensureFontsLoaded: exists and forces the real face to load before measuring',
+          r['hasFn'] and r['loaded'], str(r))
+
+
+def test_unit_embed_fonts_partial(page):
+    # allSettled, not all: if one weight's woff 404s, the others must still
+    # embed. Old Promise.all rejected the whole build on a single failure, so
+    # NOTHING embedded. Fresh page.goto = fresh module (null CSS cache) so the
+    # fetch stub takes effect; the trailing reload clears the stub + partial
+    # cache before later tests run.
+    page.goto(BASE)
+    r = page.evaluate("""
+      async () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        const real = window.fetch;
+        window.fetch = (u, o) => String(u).includes('Bold')
+          ? Promise.resolve(new Response('', { status: 404 }))
+          : real(u, o);
+        const dw = new DOMParser().parseFromString(
+          '<svg xmlns="' + NS + '"><defs/><text style="font-family: Knowledge;">hi</text></svg>',
+          'image/svg+xml').documentElement;
+        await embedFonts(dw);
+        const css = (dw.querySelector('style[data-embedded-fonts]') || {}).textContent || '';
+        window.fetch = real;
+        return {
+          faceCount: (css.match(/@font-face/g) || []).length,
+          has300: css.includes('font-weight:300'),
+          has700: css.includes('font-weight:700'),
+        };
+      }
+    """)
+    page.goto(BASE)  # discard the stubbed fetch and the partial-CSS cache
+    check('embedFonts: a failed weight degrades that weight only (allSettled) — '
+          '300 still embeds when 700 404s',
+          r['faceCount'] == 1 and r['has300'] and not r['has700'], str(r))
 
 
 def test_unit_trace_preview(page):
@@ -1234,6 +1328,7 @@ def test_unit_camera_extraction(page):
             firstFinite: Number.isFinite(pts[0][0]) && Number.isFinite(pts[0][1]),
             nX: ticks.x.length, nY: ticks.y.length,
             tickHasText: ticks.x.every(t => t.text) && ticks.y.every(t => t.text),
+            tickHasAppearance: ticks.y.every(t => t.fill && t.fontSize > 0 && t.weight && t.family),
             stage,
             stageSane: stage[0] === 0 && stage[2] > 600 && stage[1] > 0
                        && stage[1] + stage[3] <= 443.5 && stage[3] > 0,
@@ -1247,6 +1342,8 @@ def test_unit_camera_extraction(page):
     check('camera extract: line path → many root-space points', r['nPts'] > 20 and r['firstFinite'], str(r))
     check('camera extract: x and y ticks parsed with text',
           r['nX'] > 0 and r['nY'] > 0 and r['tickHasText'], str(r))
+    check('camera extract: ticks carry source appearance (fill/size/weight/family)',
+          r['tickHasAppearance'], str(r))
     check('camera extract: stage is full-width, within canvas height', r['stageSane'], str(r['stage']))
     check('camera extract: extractors never mutate the SVG (read-only)', r['readOnly'], str(r))
     check('camera extract: idempotent — repeat calls identical', r['stable'], str(r))
@@ -1294,7 +1391,9 @@ def test_unit_camera_inject_smil(page):
           '<svg xmlns="' + NS + '" width="400" height="300">' +
           '<g id="svg-main-svg" transform="translate(0,50)">' +
             '<g id="group-svg" transform="translate(20,0)">' +
-              '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/></g>' +
+              '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/>' +
+                  '<line x1="300" x2="0" y1="20" y2="20"/>' +
+                  '<line x1="5" x2="5" y1="0" y2="30"/></g>' +
             '</g>' +
             '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>' +
             '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>' +
@@ -1302,13 +1401,17 @@ def test_unit_camera_inject_smil(page):
           '</g></svg>', 'image/svg+xml').documentElement;
 
         const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
-        const ticks  = { y:[{x:0,y:40,text:'30'}], x:[{x:100,y:250,text:'Jan'}] };
+        const ticks  = {
+          y:[{x:0,y:40,text:'30',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}],
+          x:[{x:100,y:250,text:'Jan',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}] };
         const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
         injectCameraSMIL(svgEl, plan);
 
         const plot = svgEl.querySelector('[id="svg-main-svg"]');
         const wrap = svgEl.querySelector('g[data-camera]');
-        const line = svgEl.querySelector('[id="y-grid-lines-svg"] line');
+        const gridLines = [...svgEl.querySelectorAll('[id="y-grid-lines-svg"] line')];
+        const line = gridLines[0];                 // LTR gridline
+        const baseAnim = gridLines[1].getElementsByTagName('animate')[0];  // RTL baseline
         const before = svgEl.querySelectorAll('g[data-camera]').length;
         injectCameraSMIL(svgEl, plan);   // idempotency
         const after = svgEl.querySelectorAll('g[data-camera]').length;
@@ -1323,8 +1426,16 @@ def test_unit_camera_inject_smil(page):
           origXHidden: svgEl.querySelector('[id="x-tick-labels-svg"]').getAttribute('opacity') === '0',
           gridNonScaling: line.getAttribute('vector-effect') === 'non-scaling-stroke',
           gridAnimated: line.getElementsByTagName('animate').length === 1,
+          baselineNonScaling: gridLines[1].getAttribute('vector-effect') === 'non-scaling-stroke',
+          baselineTrimsX2: !!baseAnim && baseAnim.getAttribute('attributeName') === 'x2',
+          verticalSkipped: gridLines[2].getAttribute('vector-effect') !== 'non-scaling-stroke'
+            && gridLines[2].getElementsByTagName('animate').length === 0,
           axisLabels: svgEl.querySelector('g[data-camera-axes]')
             ? svgEl.querySelector('g[data-camera-axes]').getElementsByTagName('text').length : 0,
+          labelFill: (svgEl.querySelector('g[data-camera-axes] text') || {}).getAttribute
+            ? svgEl.querySelector('g[data-camera-axes] text').getAttribute('fill') : null,
+          labelSize: (svgEl.querySelector('g[data-camera-axes] text') || {}).getAttribute
+            ? svgEl.querySelector('g[data-camera-axes] text').getAttribute('font-size') : null,
           idempotent: before === 1 && after === 1,
         };
       }
@@ -1336,14 +1447,22 @@ def test_unit_camera_inject_smil(page):
     check('camera SMIL: original tick labels hidden', r['origYHidden'] and r['origXHidden'], str(r))
     check('camera SMIL: gridline non-scaling-stroke + x1 trim animate',
           r['gridNonScaling'] and r['gridAnimated'], str(r))
+    check('camera SMIL: RTL-drawn zero baseline also non-scaling, trims its left end (x2)',
+          r['baselineNonScaling'] and r['baselineTrimsX2'], str(r))
+    check('camera SMIL: true vertical rule is skipped (orientation guard)',
+          r['verticalSkipped'], str(r))
     check('camera SMIL: anchored axis labels rebuilt (y + x)', r['axisLabels'] == 2, str(r))
+    check('camera SMIL: rebuilt labels use the source appearance, not hard-coded white/13',
+          r['labelFill'] == 'rgb(134,134,134)' and r['labelSize'] == '14', str(r))
     check('camera SMIL: idempotent — re-run does not double-wrap', r['idempotent'], str(r))
 
 
 CAMERA_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">'
               '<g id="svg-main-svg" transform="translate(0,50)">'
                 '<g id="group-svg" transform="translate(20,0)">'
-                  '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/></g>'
+                  '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/>'
+                  '<line x1="300" x2="0" y1="20" y2="20"/>'
+                  '<line x1="5" x2="5" y1="0" y2="30"/></g>'
                 '</g>'
                 '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>'
                 '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>'
@@ -1358,10 +1477,19 @@ def test_unit_camera_export(page):
       () => {
         const svgEl = new DOMParser().parseFromString(`%s`, 'image/svg+xml').documentElement;
         const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
-        const ticks  = { y:[{x:0,y:40,text:'30'}], x:[{x:100,y:250,text:'Jan'}] };
+        const ticks  = {
+          y:[{x:0,y:40,text:'30',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}],
+          x:[{x:100,y:250,text:'Jan',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}] };
         const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
         setupCamera(svgEl, plan);
         const plot = svgEl.querySelector('[id="svg-main-svg"]');
+        const gridLines = [...svgEl.querySelectorAll('[id="y-grid-lines-svg"] line')];
+        // Capture the static trim right after setupCamera — applyCameraAtTime
+        // below re-trims per frame (gridStarts is per-keyframe), so reading at
+        // the end would see an animated value, not the scaffold's left-end trim.
+        const baseTrimmedAtSetup =
+          gridLines[1].getAttribute('x2') === String(plan.gridStarts[0])
+          && gridLines[1].getAttribute('x1') === '300';
         const scaleOf = () => parseFloat((plot.getAttribute('transform').match(/scale\\(([-\\d.]+)/) || [])[1]);
         const yLabel = svgEl.querySelector('text[data-cam-yi]');
 
@@ -1378,6 +1506,11 @@ def test_unit_camera_export(page):
           scaffolded: !!svgEl.querySelector('g[data-camera]') && !!svgEl.querySelector('g[data-camera-axes]'),
           noAnimates: plot.getElementsByTagName('animateTransform').length === 0,
           s0, sMid, labelMoved: y0 !== yMid,
+          baselineNonScaling: gridLines[1].getAttribute('vector-effect') === 'non-scaling-stroke',
+          baselineTrimsX2: baseTrimmedAtSetup,
+          verticalSkipped: gridLines[2].getAttribute('vector-effect') !== 'non-scaling-stroke',
+          labelFill: yLabel.getAttribute('fill'),
+          labelSize: yLabel.getAttribute('font-size'),
           idempotent: before === 1 && after === 1,
         };
       }
@@ -1387,6 +1520,12 @@ def test_unit_camera_export(page):
     check('camera export: wide scale ≈ 1, summit scale > 1 (eased push-in)',
           abs(r['s0'] - 1) < 0.01 and r['sMid'] > 1.2, str(r))
     check('camera export: anchored label position moves between frames', r['labelMoved'], str(r))
+    check('camera export: RTL baseline non-scaling + left end (x2) trimmed to gutter',
+          r['baselineNonScaling'] and r['baselineTrimsX2'], str(r))
+    check('camera export: true vertical rule is skipped (orientation guard)',
+          r['verticalSkipped'], str(r))
+    check('camera export: rebuilt labels use source appearance, not hard-coded white/13',
+          r['labelFill'] == 'rgb(134,134,134)' and r['labelSize'] == '14', str(r))
     check('camera export: setupCamera idempotent', r['idempotent'], str(r))
 
 
@@ -1474,6 +1613,7 @@ def main():
             test_synthesis_stacked,
             test_synthesis_leaves_others_untouched,
             test_queue_all,
+            test_camera_toggle_labels,
             test_header_queue_and_footer_hide,
             test_preview,
             test_overhang_validation,
@@ -1486,6 +1626,8 @@ def main():
             test_camera_capture_end_to_end,
             test_transparent_capture,
             test_background_rect_detection,
+            test_unit_embed_fonts_partial,
+            test_unit_ensure_fonts_loaded,
         ):
             print(f'\n── {test.__name__} ──')
             try:

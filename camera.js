@@ -154,10 +154,21 @@ function extractTicks(svgEl) {
         x = _round2(m.e); y = _round2(m.f); // the text's own origin (0,0) → root
       }
       const span = t.querySelector('tspan');
-      const fs = span ? parseFloat(getComputedStyle(span).fontSize) : 12;
+      const cs = span ? getComputedStyle(span) : null;
+      const fs = cs ? parseFloat(cs.fontSize) : 12;
       const text = (t.textContent || '').trim().replace(/([A-Za-z.])(\d{4})$/, '$1 $2');
       const anchor = (getComputedStyle(t).textAnchor) || 'start';
-      return { text, x, y, fontSize: _round2(fs || 12), anchor };
+      // Carry the source label's appearance so the anchored rebuild matches it,
+      // rather than hard-coding white/13/300 (which is invisible on the light
+      // charts and re-types the dark ones). Only the appearance travels; the
+      // camera keeps its own gutter/axis anchoring.
+      return {
+        text, x, y, anchor,
+        fontSize: _round2(fs || 12),
+        fill: (cs && cs.fill) || (span && span.getAttribute('fill')) || 'rgb(51,51,51)',
+        weight: (cs && cs.fontWeight) || '300',
+        family: (cs && cs.fontFamily) || 'Knowledge',
+      };
     }).filter(d => d.text);
   };
   return { y: read('y-tick-labels-svg'), x: read('x-tick-labels-svg') };
@@ -183,11 +194,21 @@ function _rootBBox(svgEl, el) {
 const CAM = {
   gutter:     24,    // stage-left strip the y labels live in (px)
   gutterGap:   6,    // gap between a y label and where its gridline starts
-  labelSize:  13,
   labelLag:  0.10,   // seconds the labels trail the plot ("scrolly" feel)
   xLabelHalf: 23,    // half a date label's width, for edge fade tests
   yLabelHalf:  8,    // half a number label's height
 };
+
+// Style an anchored axis label from the source tick's own appearance (carried
+// through the plan by extractTicks). Replaces a hard-coded white/13/300 that
+// vanished on light charts and re-typed dark ones. Position/anchor stay the
+// camera's — only fill/size/weight/family come from the source.
+function _styleLabel(t, lbl) {
+  t.setAttribute('fill', lbl.fill || 'rgb(51,51,51)');
+  t.setAttribute('font-family', lbl.family || 'Knowledge');
+  t.setAttribute('font-weight', lbl.weight || '300');
+  t.setAttribute('font-size', String(lbl.fontSize || 12));
+}
 
 // Default camera timing — the China pilot's proven curve: hold wide, ease in to
 // the summit, then ease back out borrowing the fall's acceleration.
@@ -228,14 +249,16 @@ function buildCameraPlan(points, stage, ticks, duration, opts = {}) {
   const yLabels = (ticks.y || []).map(t => {
     const ys  = frames.map((_, k) => _round2(toScreenY(t.y, k)));
     const ops = ys.map(y => _fade(y - CAM.yLabelHalf, y + CAM.yLabelHalf, sy, sy + sh));
-    return { x: _round2(sx + CAM.gutter - CAM.gutterGap), ys, ops, text: t.text };
+    return { x: _round2(sx + CAM.gutter - CAM.gutterGap), ys, ops, text: t.text,
+             fontSize: t.fontSize, fill: t.fill, weight: t.weight, family: t.family };
   });
   // X labels: fixed on the axis line, tracking their own tick across the stage.
   const axisY = (ticks.x && ticks.x[0]) ? ticks.x[0].y : sy + sh;
   const xLabels = (ticks.x || []).map(t => {
     const xs  = frames.map((_, k) => _round2(toScreenX(t.x, k)));
     const ops = xs.map(x => _fade(x - CAM.xLabelHalf, x + CAM.xLabelHalf, sx, sx + sw));
-    return { xs, y: _round2(axisY), ops, text: t.text };
+    return { xs, y: _round2(axisY), ops, text: t.text,
+             fontSize: t.fontSize, fill: t.fill, weight: t.weight, family: t.family };
   });
   // Gridlines start clear of the y-label gutter rather than under the numbers.
   const gridStarts = frames.map((f, k) => _round2(Math.max(0, f[0] + CAM.gutter / scales[k] - gx)));
@@ -313,12 +336,18 @@ function injectCameraSMIL(svgEl, plan, opts = {}) {
   }
 
   // Gridlines: hold their weight (non-scaling-stroke), trim to the gutter. Skip
-  // vertical rules (x2="0"); scope to the plot subtree so the legend swatch line
-  // isn't stretched across the chart.
+  // *vertical* rules by orientation (y1!==y2) — the old `x2==="0"` guard instead
+  // skipped the zero baseline, which Datawrapper draws right-to-left (x1=width,
+  // x2=0), so the most prominent rule ballooned to ~2.8px at zoom among 1px
+  // hairlines. Trim the actual left endpoint (min of x1/x2), so an RTL-drawn
+  // rule trims from the same side as the others. Scoped to the plot subtree so
+  // the legend swatch line isn't stretched across the chart.
   for (const line of plot.querySelectorAll('line')) {
-    if (line.getAttribute('x2') === '0') continue;
+    const num = a => parseFloat(line.getAttribute(a)) || 0;
+    if (num('y1') !== num('y2')) continue;
     line.setAttribute('vector-effect', 'non-scaling-stroke');
-    line.appendChild(_camAnim('x1', plan.gridStarts.map(_round2), plan));
+    line.appendChild(_camAnim(num('x1') <= num('x2') ? 'x1' : 'x2',
+                              plan.gridStarts.map(_round2), plan));
   }
 
   // Anchored axis labels — outside the transformed group, so they hold their
@@ -326,19 +355,13 @@ function injectCameraSMIL(svgEl, plan, opts = {}) {
   const labels = _cel('g');
   labels.setAttribute('clip-path', `url(#${clipId})`);
   labels.setAttribute('data-camera-axes', '');
-  const common = t => {
-    t.setAttribute('fill', 'rgb(255,255,255)');
-    t.setAttribute('font-family', 'Knowledge');
-    t.setAttribute('font-weight', '300');
-    t.setAttribute('font-size', String(CAM.labelSize));
-  };
   for (const yl of plan.yLabels) {
     const t = _cel('text');
     t.setAttribute('x', yl.x); t.setAttribute('y', yl.ys[0]);
     t.setAttribute('opacity', yl.ops[0]);
     t.setAttribute('dominant-baseline', 'middle');
     t.setAttribute('style', 'text-anchor: end;');
-    common(t);
+    _styleLabel(t, yl);
     t.appendChild(_camAnim('y', yl.ys, plan, { begin: CAM.labelLag }));
     t.appendChild(_camAnim('opacity', yl.ops, plan, { begin: CAM.labelLag }));
     t.appendChild(document.createTextNode(yl.text));
@@ -349,7 +372,7 @@ function injectCameraSMIL(svgEl, plan, opts = {}) {
     t.setAttribute('x', xl.xs[0]); t.setAttribute('y', xl.y);
     t.setAttribute('opacity', xl.ops[0]);
     t.setAttribute('style', 'text-anchor: middle;');
-    common(t);
+    _styleLabel(t, xl);
     t.appendChild(_camAnim('x', xl.xs, plan, { begin: CAM.labelLag }));
     t.appendChild(_camAnim('opacity', xl.ops, plan, { begin: CAM.labelLag }));
     t.appendChild(document.createTextNode(xl.text));
@@ -443,35 +466,30 @@ function setupCamera(svgEl, plan, opts = {}) {
     if (g) g.setAttribute('opacity', '0');
   }
   for (const line of plot.querySelectorAll('line')) {
-    if (line.getAttribute('x2') === '0') continue;
+    const num = a => parseFloat(line.getAttribute(a)) || 0;
+    if (num('y1') !== num('y2')) continue;   // skip vertical rules by orientation
     line.setAttribute('vector-effect', 'non-scaling-stroke');
-    line.setAttribute('x1', plan.gridStarts[0]);
+    line.setAttribute(num('x1') <= num('x2') ? 'x1' : 'x2', plan.gridStarts[0]);
     line.setAttribute('data-cam-grid', '');
   }
 
   const labels = _cel('g');
   labels.setAttribute('clip-path', `url(#${clipId})`);
   labels.setAttribute('data-camera-axes', '');
-  const common = t => {
-    t.setAttribute('fill', 'rgb(255,255,255)');
-    t.setAttribute('font-family', 'Knowledge');
-    t.setAttribute('font-weight', '300');
-    t.setAttribute('font-size', String(CAM.labelSize));
-  };
   plan.yLabels.forEach((yl, k) => {
     const t = _cel('text');
     t.setAttribute('x', yl.x); t.setAttribute('y', yl.ys[0]); t.setAttribute('opacity', yl.ops[0]);
     t.setAttribute('dominant-baseline', 'middle');
     t.setAttribute('style', 'text-anchor: end;');
     t.setAttribute('data-cam-yi', k);
-    common(t); t.appendChild(document.createTextNode(yl.text)); labels.appendChild(t);
+    _styleLabel(t, yl); t.appendChild(document.createTextNode(yl.text)); labels.appendChild(t);
   });
   plan.xLabels.forEach((xl, k) => {
     const t = _cel('text');
     t.setAttribute('x', xl.xs[0]); t.setAttribute('y', xl.y); t.setAttribute('opacity', xl.ops[0]);
     t.setAttribute('style', 'text-anchor: middle;');
     t.setAttribute('data-cam-xi', k);
-    common(t); t.appendChild(document.createTextNode(xl.text)); labels.appendChild(t);
+    _styleLabel(t, xl); t.appendChild(document.createTextNode(xl.text)); labels.appendChild(t);
   });
   svgEl.appendChild(labels);
 
@@ -599,7 +617,7 @@ async function computeCameraPlan(svgEl, config) {
   document.body.appendChild(host);
   const live = host.querySelector('svg');
   try {
-    if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch {} }
+    await ensureFontsLoaded();  // request the real faces, then await — not ready alone (fonts.js)
     // Follow an explicit line, else the first stroked line, else a dots-line.
     let points = [], splitLineId = null;
     const linePath = config.camera.line_id

@@ -16,11 +16,12 @@
 'use strict';
 
 // Weights the Datawrapper exports actually use, mapped to the vendored .woff.
-// Embedding only these keeps the payload down.
+// Only 300 and 700 appear in real exports (audited across China, SPR, Brent,
+// jobless — 0 uses of 400); weight-400 text would fall to 300 by CSS matching
+// anyway. Embedding Regular was ~67KB of dead base64 in every exported SVG.
 const FONT_FACES = [
-  { family: 'Knowledge', weight: 300, file: 'fonts/Knowledge2017-Light.woff'   },
-  { family: 'Knowledge', weight: 400, file: 'fonts/Knowledge2017-Regular.woff' },
-  { family: 'Knowledge', weight: 700, file: 'fonts/Knowledge2017-Bold.woff'    },
+  { family: 'Knowledge', weight: 300, file: 'fonts/Knowledge2017-Light.woff' },
+  { family: 'Knowledge', weight: 700, file: 'fonts/Knowledge2017-Bold.woff'  },
 ];
 
 // Cache the built @font-face CSS so the woff files are fetched + encoded once
@@ -39,13 +40,23 @@ function _bytesToBase64(bytes) {
 }
 
 async function _buildFontCss() {
-  const rules = await Promise.all(FONT_FACES.map(async ({ family, weight, file }) => {
+  // allSettled, not all: one weight failing to fetch must not throw away the
+  // others. With Promise.all a single missing/404 woff rejected the whole build
+  // and NOTHING embedded — so a deploy that shipped Light but not Bold got no
+  // font at all, the exact §0 failure this module exists to prevent. Now a
+  // missing weight degrades that weight only.
+  const settled = await Promise.allSettled(FONT_FACES.map(async ({ family, weight, file }) => {
     const resp = await fetch(new URL(file, document.baseURI).href);
     if (!resp.ok) throw new Error(`${file} → ${resp.status}`);
     const b64 = _bytesToBase64(new Uint8Array(await resp.arrayBuffer()));
     return `@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};`
          + `src:url(data:font/woff;base64,${b64}) format('woff');}`;
   }));
+  const rules = [];
+  for (const s of settled) {
+    if (s.status === 'fulfilled') rules.push(s.value);
+    else console.warn('fonts.js: a font weight failed to embed —', s.reason && s.reason.message);
+  }
   return rules.join('');
 }
 
@@ -60,6 +71,24 @@ function loadFontCss() {
     });
   }
   return _fontCssPromise;
+}
+
+// Force the embedded faces to actually load before any glyph measurement.
+// `document.fonts.ready` alone is not enough: it resolves when *pending* loads
+// settle, but inserting an @font-face starts no load until something lays out
+// text in it — and nothing forces layout between appending the measurement host
+// and the await. On a cold font cache the await then resolves against the
+// FALLBACK face, getStartPositionOfChar measures ~27% too wide, and every
+// bubble-up letter is pinned to the wrong spot (§0 failure mode #3). Requesting
+// the faces explicitly makes the load pending, so the subsequent ready await is
+// real. Harmless when fonts aren't present (load rejects; we swallow it).
+async function ensureFontsLoaded() {
+  if (!document.fonts || !document.fonts.load) return;
+  try {
+    await Promise.all(FONT_FACES.map(({ weight, family }) =>
+      document.fonts.load(`${weight} 21px ${family}`).catch(() => {})));
+    if (document.fonts.ready) await document.fonts.ready;
+  } catch { /* best-effort — never block a build on font loading */ }
 }
 
 // True when svgEl references a family we can embed. Gates embedFonts so SVGs
