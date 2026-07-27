@@ -20,47 +20,97 @@ const state = {
 // loader is hidden and charts come in via file upload, paste, or the example.
 const IS_STATIC_HOST = location.hostname.endsWith('github.io') || location.protocol === 'file:';
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Where this UI lives ───────────────────────────────────────────────────────
+//
+// `document` when running as a standalone page; a shadow root when mounted as
+// <chart-animator> inside the Reuters exporter. Every lookup goes through these
+// helpers so one implementation serves both — and so switching between light and
+// shadow DOM is a one-line change rather than a migration.
+//
+// Retrofitting this later would mean revisiting ~50 call sites and finding the
+// misses at runtime, silently, because a missed lookup returns null rather than
+// throwing.
+let root = document;
 
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('chart-id-input').addEventListener('keydown', e => {
+// ShadowRoot inherits getElementById from DocumentFragment; a plain element host
+// does not, so fall back to a selector for the light-DOM mount.
+const $ = id => (root.getElementById ? root.getElementById(id)
+                                     : root.querySelector('#' + CSS.escape(id)));
+const $$ = sel => root.querySelectorAll(sel);
+const $1 = sel => root.querySelector(sel);
+
+// True while embedded, so we can avoid reaching outside our own subtree.
+const isEmbedded = () => root !== document;
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+//
+// Two entry points, one body. A standalone page calls initApp() on
+// DOMContentLoaded; <chart-animator> calls mountApp(shadowRoot) instead. The
+// guard stops a component that mounts before DOMContentLoaded being initialised
+// twice.
+
+// Guarded PER ROOT, not globally. A global latch looks equivalent and isn't:
+// mounting into a shadow root after a standalone page had already booted would
+// set the root but skip the wiring, leaving every control dead — silently,
+// because the lookups still resolve.
+let _mountedRoot = null;
+
+function initApp() {
+  if (_mountedRoot === root) return;
+  _mountedRoot = root;
+
+  // Warm the real font at boot, not at first preview.
+  //
+  // The Stage is raw Datawrapper markup (injectSvg does innerHTML = state.svg).
+  // It REFERENCES `font-family: Knowledge` but carries no face, and nothing on
+  // the load path embeds one — so the Stage rendered in the fallback serif while
+  // only the preview looked right. Registering at document level makes the
+  // family available to everything in the document, the Stage included.
+  //
+  // Kicked off here rather than in injectSvg because the fetch + decode is async
+  // and injectSvg is synchronous: starting at boot means the face is ready long
+  // before a chart is loaded, instead of swapping in visibly afterwards.
+  registerFontsAtDocument(); // fonts.js — fire and forget, best-effort
+  $('chart-id-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') loadSvg();
   });
-  document.getElementById('load-btn').addEventListener('click', loadSvg);
-  document.getElementById('test-btn').addEventListener('click', loadTestSvg);
-  document.getElementById('file-btn').addEventListener('click', () =>
-    document.getElementById('file-input').click());
-  document.getElementById('file-input').addEventListener('change', loadSvgFile);
-  document.addEventListener('paste', onPasteSvg);
+  $('load-btn').addEventListener('click', loadSvg);
+  $('test-btn').addEventListener('click', loadTestSvg);
+  $('file-btn').addEventListener('click', () =>
+    $('file-input').click());
+  $('file-input').addEventListener('change', loadSvgFile);
+  // Scoped when embedded: a component that hijacks the host page's paste
+  // would swallow pastes meant for the exporter's own inputs.
+  (isEmbedded() ? root : document).addEventListener('paste', onPasteSvg);
 
   if (IS_STATIC_HOST) {
-    document.getElementById('chart-id-input').hidden = true;
-    document.getElementById('load-btn').hidden = true;
-    document.getElementById('input-label').textContent = 'Open an SVG file exported from Datawrapper';
+    $('chart-id-input').hidden = true;
+    $('load-btn').hidden = true;
+    $('input-label').textContent = 'Open an SVG file exported from Datawrapper';
   }
-  document.getElementById('total-duration').addEventListener('input', validateOverhangs);
+  $('total-duration').addEventListener('input', validateOverhangs);
   // §3/§4 camera toggle (opt-in whole-chart effect). split-draw only applies with
   // the camera on, so it's disabled until then.
-  const camToggle   = document.getElementById('camera-toggle');
-  const splitToggle = document.getElementById('camera-split-toggle');
+  const camToggle   = $('camera-toggle');
+  const splitToggle = $('camera-split-toggle');
   const syncCamera = () => {
     splitToggle.disabled = !camToggle.checked;
     state.camera = camToggle.checked
-      ? { enabled: true, split_draw: splitToggle.checked, duration: +document.getElementById('total-duration').value }
+      ? { enabled: true, split_draw: splitToggle.checked, duration: +$('total-duration').value }
       : null;
   };
   camToggle.addEventListener('change', syncCamera);
   splitToggle.addEventListener('change', syncCamera);
-  document.getElementById('total-duration').addEventListener('input', syncCamera);
+  $('total-duration').addEventListener('input', syncCamera);
   // Sync state to the actual DOM at init: browsers restore checkbox state across
   // a soft reload, so a page that loads with Camera already ticked must not leave
   // state.camera null (and split-draw must be enabled to match). Replaces a bare
   // `splitToggle.disabled = true` that assumed Camera always starts unchecked.
   syncCamera();
-  document.getElementById('queue-all-btn').addEventListener('click', queueAll);
-  document.getElementById('preview-btn').addEventListener('click', preview);
-  document.getElementById('export-btn').addEventListener('click', toggleExportMenu);
-  document.getElementById('export-menu').addEventListener('click', e => {
+  $('queue-all-btn').addEventListener('click', queueAll);
+  $('preview-btn').addEventListener('click', preview);
+  $('export-btn').addEventListener('click', toggleExportMenu);
+  $('export-menu').addEventListener('click', e => {
     const btn = e.target.closest('button[data-fmt]');
     if (!btn) return;
     const opts = {};
@@ -68,14 +118,32 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btn.dataset.width) opts.targetWidth = parseInt(btn.dataset.width, 10);
     exportAs(btn.dataset.fmt, opts);
   });
+  // Stays on document even when embedded — closing the menu means noticing a
+  // click anywhere, including outside our subtree. Shadow events are composed,
+  // so they reach document; `composedPath` sees through the boundary.
   document.addEventListener('click', e => {
-    const menu = document.getElementById('export-menu');
-    if (!menu.hidden && !e.target.closest('.export-wrap')) menu.hidden = true;
+    const menu = $('export-menu');
+    if (!menu || menu.hidden) return;
+    // composedPath, not e.target.closest: at document level a click inside a
+    // shadow root is RETARGETED to the host element, so closest('.export-wrap')
+    // would never match and the menu would close on its own buttons.
+    const path = e.composedPath ? e.composedPath() : [e.target];
+    const inside = path.some(n => n && n.classList && n.classList.contains('export-wrap'));
+    if (!inside) menu.hidden = true;
   });
-  document.querySelectorAll('input[name="preview-bg"]').forEach(r => {
+  $$('input[name="preview-bg"]').forEach(r => {
     r.addEventListener('change', () => setPreviewBg(r.value));
   });
-});
+}
+
+// Mount into a shadow root (or any container). Called by chart-animator.js.
+function mountApp(newRoot) {
+  root = newRoot;
+  initApp();
+}
+
+// Standalone boot. Skipped when a component already mounted us.
+document.addEventListener('DOMContentLoaded', () => initApp());
 
 // ── Chart ID extraction ───────────────────────────────────────────────────────
 
@@ -110,12 +178,12 @@ function loadSvgString(svg) {
   state.hidden   = new Set();
   injectSvg();
   renderQueue();
-  document.getElementById('queue-section').hidden = false;
+  $('queue-section').hidden = false;
   return true;
 }
 
 async function loadTestSvg() {
-  const btn = document.getElementById('test-btn');
+  const btn = $('test-btn');
   btn.disabled = true; btn.textContent = 'Loading…';
   try {
     const resp = await fetch('examples/multi_line_graph.svg');
@@ -124,7 +192,7 @@ async function loadTestSvg() {
       return;
     }
     const svg = await resp.text();
-    document.getElementById('chart-id-input').value = CONFIG.testChartId;
+    $('chart-id-input').value = CONFIG.testChartId;
     loadSvgString(svg);
   } catch {
     showInputError("Couldn't load test SVG.");
@@ -148,14 +216,14 @@ function onPasteSvg(e) {
 }
 
 async function loadSvg() {
-  const chartId = extractChartId(document.getElementById('chart-id-input').value);
+  const chartId = extractChartId($('chart-id-input').value);
   if (!chartId) {
     showInputError("That doesn't look like a valid chart ID or Datawrapper URL.");
     return;
   }
   clearInputError();
 
-  const btn = document.getElementById('load-btn');
+  const btn = $('load-btn');
   btn.disabled = true; btn.textContent = 'Loading…';
 
   try {
@@ -179,19 +247,19 @@ async function loadSvg() {
 }
 
 function showInputError(msg) {
-  const el = document.getElementById('input-error');
+  const el = $('input-error');
   el.textContent = msg; el.hidden = false;
 }
 function clearInputError() {
-  document.getElementById('input-error').hidden = true;
+  $('input-error').hidden = true;
 }
 
 // ── SVG injection ─────────────────────────────────────────────────────────────
 
 function injectSvg() {
-  const container = document.getElementById('svg-container');
+  const container = $('svg-container');
   container.innerHTML = state.svg;
-  document.getElementById('no-elements-warning').hidden = state.elements.length > 0;
+  $('no-elements-warning').hidden = state.elements.length > 0;
 
   const svgEl = container.querySelector('svg');
   if (!svgEl) {
@@ -303,7 +371,7 @@ function _isHideableId(id) {
 }
 
 function toggleHidden(id) {
-  const container = document.getElementById('svg-container');
+  const container = $('svg-container');
   const all = [...container.querySelectorAll(`[id="${_esc(id)}"]`)];
   const outsideRoots = all.filter(el => !CONFIG.chartRoots.map(r => r.rootId).some(r => {
     const root = _findById(container, r); return root && root.contains(el);
@@ -324,16 +392,16 @@ function toggleHidden(id) {
 }
 
 function renderHiddenList() {
-  const panel = document.getElementById('hidden-panel');
+  const panel = $('hidden-panel');
   if (state.hidden.size === 0) { panel.hidden = true; return; }
   panel.hidden = false;
-  document.getElementById('hidden-items').innerHTML = [...state.hidden].map(id => `
+  $('hidden-items').innerHTML = [...state.hidden].map(id => `
     <div class="hidden-row">
       <span class="hidden-label">${_escHtml(_labelFromHideId(id))}</span>
       <button class="restore-btn" data-id="${_escHtml(id)}">Restore</button>
     </div>
   `).join('');
-  document.querySelectorAll('.restore-btn').forEach(btn =>
+  $$('.restore-btn').forEach(btn =>
     btn.addEventListener('click', () => toggleHidden(btn.dataset.id)));
 }
 
@@ -368,7 +436,7 @@ function queueAll() {
       element_duration: CONFIG.defaultElementDuration,
       color:            el.color,
     });
-    const dom = _findById(document.getElementById('svg-container'), el.group_id);
+    const dom = _findById($('svg-container'), el.group_id);
     if (dom) dom.classList.add(CONFIG.selectedClass);
   }
   renderQueue();
@@ -376,7 +444,7 @@ function queueAll() {
 
 function toggleElement(groupId) {
   const idx   = state.queue.findIndex(q => q.group_id === groupId);
-  const domEl = _findById(document.getElementById('svg-container'), groupId);
+  const domEl = _findById($('svg-container'), groupId);
 
   if (idx >= 0) {
     state.queue.splice(idx, 1);
@@ -399,10 +467,10 @@ function toggleElement(groupId) {
 function renderQueue() {
   const allQueued = state.elements.length > 0 &&
     state.elements.every(e => state.queue.some(q => q.group_id === e.group_id));
-  const btn = document.getElementById('queue-all-btn');
+  const btn = $('queue-all-btn');
   btn.disabled = state.elements.length === 0 || allQueued;
 
-  const container = document.getElementById('queue-items');
+  const container = $('queue-items');
   if (state.queue.length === 0) {
     container.innerHTML = '<p class="queue-empty">Click elements in the SVG above to add them to the queue.</p>';
     return;
@@ -429,7 +497,7 @@ function renderQueue() {
   container.querySelectorAll('.remove-btn').forEach(btn =>
     btn.addEventListener('click', () => {
       const item = state.queue.splice(+btn.dataset.index, 1)[0];
-      const dom  = _findById(document.getElementById('svg-container'), item.group_id);
+      const dom  = _findById($('svg-container'), item.group_id);
       if (dom) dom.classList.remove(CONFIG.selectedClass);
       renderQueue();
     }));
@@ -460,17 +528,17 @@ function _escHtml(s) {
 // ── Overhang validation ───────────────────────────────────────────────────────
 
 function validateOverhangs() {
-  const total = +document.getElementById('total-duration').value;
+  const total = +$('total-duration').value;
   state.queue.forEach((item, i) => {
     const end  = +(item.start_time + item.element_duration).toFixed(3);
-    const row  = document.querySelector(`.queue-row[data-index="${i}"]`);
+    const row  = $1(`.queue-row[data-index="${i}"]`);
     if (!row) return;
     const warn = row.querySelector('.overhang-warning');
     if (end > total) {
       warn.hidden = false;
       warn.innerHTML = `This element extends past the total duration. <button class="extend-btn">Extend to ${end}s</button>`;
       warn.querySelector('.extend-btn').addEventListener('click', () => {
-        document.getElementById('total-duration').value = end;
+        $('total-duration').value = end;
         validateOverhangs();
       });
     } else {
@@ -483,7 +551,7 @@ function validateOverhangs() {
 
 function buildConfig() {
   return {
-    total_duration: +document.getElementById('total-duration').value,
+    total_duration: +$('total-duration').value,
     elements: state.queue.map(item => ({
       group_id:         item.group_id,
       animation_type:   item.animation_type,
@@ -499,7 +567,7 @@ function buildConfig() {
 
 async function preview() {
   if (state.queue.length === 0) return;
-  const btn = document.getElementById('preview-btn');
+  const btn = $('preview-btn');
   btn.disabled = true; btn.textContent = 'Previewing…';
 
   try {
@@ -525,7 +593,7 @@ async function preview() {
     const cameraPlan   = await computeCameraPlan(svgEl, config);   // camera.js (§3/§4)
     const animated = buildAnimatedSvg(svgEl, config, measurements, cameraPlan); // animate.js
 
-    const pc = document.getElementById('preview-container');
+    const pc = $('preview-container');
     pc.innerHTML = '';
     pc.appendChild(animated);
     animated.style.maxWidth = '100%';
@@ -539,15 +607,15 @@ async function preview() {
 // ── Export ────────────────────────────────────────────────────────────────────
 
 function toggleExportMenu() {
-  const menu = document.getElementById('export-menu');
+  const menu = $('export-menu');
   menu.hidden = !menu.hidden;
 }
 
 async function exportAs(fmt, opts = {}) {
-  document.getElementById('export-menu').hidden = true;
+  $('export-menu').hidden = true;
   if (state.queue.length === 0) return;
 
-  const panel = document.getElementById('status-panel');
+  const panel = $('status-panel');
   panel.hidden   = false;
   panel.innerHTML = '';
 
@@ -587,5 +655,5 @@ async function exportAs(fmt, opts = {}) {
 // ── Preview background ────────────────────────────────────────────────────────
 
 function setPreviewBg(value) {
-  document.getElementById('preview-container').className = `bg-${value}`;
+  $('preview-container').className = `bg-${value}`;
 }

@@ -153,22 +153,20 @@ function extractTicks(svgEl) {
         const m = inv.multiply(t.getScreenCTM());
         x = _round2(m.e); y = _round2(m.f); // the text's own origin (0,0) → root
       }
-      const span = t.querySelector('tspan');
-      const cs = span ? getComputedStyle(span) : null;
-      const fs = cs ? parseFloat(cs.fontSize) : 12;
-      const text = (t.textContent || '').trim().replace(/([A-Za-z.])(\d{4})$/, '$1 $2');
+      // Datawrapper stacks a two-line date as two tspans ("July" / "2025"), so
+      // textContent glues them. Re-split ONLY when there is a single tspan —
+      // a genuine glue. A real two-tspan node keeps its own structure and must
+      // not be re-spaced, because the reparent preserves those tspans verbatim.
+      const spans = t.querySelectorAll('tspan');
+      const raw = (t.textContent || '').trim();
+      const text = spans.length > 1 ? raw : raw.replace(/([A-Za-z.])(\d{4})$/, '$1 $2');
       const anchor = (getComputedStyle(t).textAnchor) || 'start';
-      // Carry the source label's appearance so the anchored rebuild matches it,
-      // rather than hard-coding white/13/300 (which is invisible on the light
-      // charts and re-types the dark ones). Only the appearance travels; the
-      // camera keeps its own gutter/axis anchoring.
-      return {
-        text, x, y, anchor,
-        fontSize: _round2(fs || 12),
-        fill: (cs && cs.fill) || (span && span.getAttribute('fill')) || 'rgb(51,51,51)',
-        weight: (cs && cs.fontWeight) || '300',
-        family: (cs && cs.fontFamily) || 'Knowledge',
-      };
+      // No appearance fields: the reparent moves the ORIGINAL node, so fill,
+      // size, weight, tspan structure and baseline survive by construction
+      // (issue #21). Threading appearance through the plan only existed to feed
+      // a rebuild, and a rebuild is what forced someone to choose a colour —
+      // which is how the camera came to hard-code white (ADR 0009 §1).
+      return { text, x, y, anchor };
     }).filter(d => d.text);
   };
   return { y: read('y-tick-labels-svg'), x: read('x-tick-labels-svg') };
@@ -199,15 +197,79 @@ const CAM = {
   yLabelHalf:  8,    // half a number label's height
 };
 
-// Style an anchored axis label from the source tick's own appearance (carried
-// through the plan by extractTicks). Replaces a hard-coded white/13/300 that
-// vanished on light charts and re-typed dark ones. Position/anchor stay the
-// camera's — only fill/size/weight/family come from the source.
-function _styleLabel(t, lbl) {
-  t.setAttribute('fill', lbl.fill || 'rgb(51,51,51)');
-  t.setAttribute('font-family', lbl.family || 'Knowledge');
-  t.setAttribute('font-weight', lbl.weight || '300');
-  t.setAttribute('font-size', String(lbl.fontSize || 12));
+// ── Axis-label reparenting (issue #21) ───────────────────────────────────────
+//
+// The camera used to REBUILD axis labels: new <text>, copied appearance, plain
+// text node. That is what forced every visual property to be threaded through
+// the plan, and a rebuild always makes someone choose a value — which is how the
+// camera came to hard-code white/13/300 (ADR 0009 §1: "the source may already be
+// dark — do not assume it needs inverting").
+//
+// Instead we MOVE the original node. Everything visual then survives because we
+// never touch it.
+//
+// The subtle part is position. A tick's whole position lives in a stacked
+// transform:
+//
+//   <text transform="translate(0,302) translate(-24.2,0) translate(24.2,0)"
+//         style="text-anchor: end;">
+//     <tspan fill="…" x="0" dominant-baseline="auto" y="0">July</tspan>
+//     <tspan fill="…" x="0" dominant-baseline="auto" y="17">2025</tspan>
+//   </text>
+//
+// tspan x/y are ABSOLUTE, not relative — so re-authoring the parent's x/y drags
+// the tspans somewhere else entirely, and clearing them collapses the two-line
+// stack. Every one of those is a silent render break.
+//
+// So we REPLACE the transform with our own translate and animate the transform,
+// leaving x, y, tspans, dominant-baseline and fill completely alone. The plan's
+// coordinates are the tick's own root-space origin, so translating to them
+// reproduces the source's baseline relationship rather than imposing one.
+const _TICK_KEY = s => (s || '').replace(/\s+/g, '').trim();
+
+// Find the source tick whose text matches, and detach it. Matching is by TEXT,
+// never by index: extractTicks drops empty ticks, so a suppressed tick would
+// shift every subsequent label — and throw in export on an undefined .ys.
+// `used` guards against two ticks with identical text taking the same node.
+function _takeTickNode(svgEl, prefix, text, used) {
+  const g = _findByIdPrefix(svgEl, prefix);
+  if (!g) return null;
+  const want = _TICK_KEY(text);
+  for (const t of g.querySelectorAll('text')) {
+    if (used.has(t)) continue;
+    if (_TICK_KEY(t.textContent) !== want) continue;
+    used.add(t);
+    return t;
+  }
+  return null;
+}
+
+// Position a reparented tick. `anchor` is set as an inline style PROPERTY, not a
+// presentation attribute: the source carries `style="text-anchor: …"` inline and
+// an attribute loses to it. Some y-ticks are `start` at source and must become
+// `end` to sit in the camera's gutter.
+function _placeTick(t, x, y, anchor) {
+  t.setAttribute('transform', `translate(${_round2(x)}, ${_round2(y)})`);
+  t.style.textAnchor = anchor;
+}
+
+// Fall back to a built label when no source node matches (a plan probed from a
+// different DOM, or a synthetic SVG). Marked so it is distinguishable — a
+// silent rebuild is exactly what this change exists to remove.
+function _buildTickFallback(text) {
+  const t = _cel('text');
+  t.setAttribute('data-cam-rebuilt', '');
+  t.appendChild(document.createTextNode(text));
+  return t;
+}
+
+// Get the tick node for a plan label: the original if we can find it, a marked
+// rebuild otherwise. Reparents into `labels`.
+function _tickFor(svgEl, prefix, label, used, labels) {
+  const node = _takeTickNode(svgEl, prefix, label.text, used)
+            || _buildTickFallback(label.text);
+  labels.appendChild(node);   // moves it out of the transformed plot group
+  return node;
 }
 
 // Default camera timing — the China pilot's proven curve: hold wide, ease in to
@@ -249,16 +311,14 @@ function buildCameraPlan(points, stage, ticks, duration, opts = {}) {
   const yLabels = (ticks.y || []).map(t => {
     const ys  = frames.map((_, k) => _round2(toScreenY(t.y, k)));
     const ops = ys.map(y => _fade(y - CAM.yLabelHalf, y + CAM.yLabelHalf, sy, sy + sh));
-    return { x: _round2(sx + CAM.gutter - CAM.gutterGap), ys, ops, text: t.text,
-             fontSize: t.fontSize, fill: t.fill, weight: t.weight, family: t.family };
+    return { x: _round2(sx + CAM.gutter - CAM.gutterGap), ys, ops, text: t.text };
   });
   // X labels: fixed on the axis line, tracking their own tick across the stage.
   const axisY = (ticks.x && ticks.x[0]) ? ticks.x[0].y : sy + sh;
   const xLabels = (ticks.x || []).map(t => {
     const xs  = frames.map((_, k) => _round2(toScreenX(t.x, k)));
     const ops = xs.map(x => _fade(x - CAM.xLabelHalf, x + CAM.xLabelHalf, sx, sx + sw));
-    return { xs, y: _round2(axisY), ops, text: t.text,
-             fontSize: t.fontSize, fill: t.fill, weight: t.weight, family: t.family };
+    return { xs, y: _round2(axisY), ops, text: t.text };
   });
   // Gridlines start clear of the y-label gutter rather than under the numbers.
   const gridStarts = frames.map((f, k) => _round2(Math.max(0, f[0] + CAM.gutter / scales[k] - gx)));
@@ -355,28 +415,27 @@ function injectCameraSMIL(svgEl, plan, opts = {}) {
   const labels = _cel('g');
   labels.setAttribute('clip-path', `url(#${clipId})`);
   labels.setAttribute('data-camera-axes', '');
+  // Reparent the ORIGINAL tick nodes (issue #21) and animate their transform.
+  // animateTransform, not x/y: the tspans carry absolute coordinates, so moving
+  // the parent by transform is the only way to keep a two-line date stacked.
+  const used = new Set();
   for (const yl of plan.yLabels) {
-    const t = _cel('text');
-    t.setAttribute('x', yl.x); t.setAttribute('y', yl.ys[0]);
+    const t = _tickFor(svgEl, 'y-tick-labels-svg', yl, used, labels);
+    _placeTick(t, yl.x, yl.ys[0], 'end');
     t.setAttribute('opacity', yl.ops[0]);
-    t.setAttribute('dominant-baseline', 'middle');
-    t.setAttribute('style', 'text-anchor: end;');
-    _styleLabel(t, yl);
-    t.appendChild(_camAnim('y', yl.ys, plan, { begin: CAM.labelLag }));
+    t.appendChild(_camAnim('transform', yl.ys.map(y => `${_round2(yl.x)} ${_round2(y)}`),
+                           plan, { tag: 'animateTransform', type: 'translate',
+                                   begin: CAM.labelLag }));
     t.appendChild(_camAnim('opacity', yl.ops, plan, { begin: CAM.labelLag }));
-    t.appendChild(document.createTextNode(yl.text));
-    labels.appendChild(t);
   }
   for (const xl of plan.xLabels) {
-    const t = _cel('text');
-    t.setAttribute('x', xl.xs[0]); t.setAttribute('y', xl.y);
+    const t = _tickFor(svgEl, 'x-tick-labels-svg', xl, used, labels);
+    _placeTick(t, xl.xs[0], xl.y, 'middle');
     t.setAttribute('opacity', xl.ops[0]);
-    t.setAttribute('style', 'text-anchor: middle;');
-    _styleLabel(t, xl);
-    t.appendChild(_camAnim('x', xl.xs, plan, { begin: CAM.labelLag }));
+    t.appendChild(_camAnim('transform', xl.xs.map(x => `${_round2(x)} ${_round2(xl.y)}`),
+                           plan, { tag: 'animateTransform', type: 'translate',
+                                   begin: CAM.labelLag }));
     t.appendChild(_camAnim('opacity', xl.ops, plan, { begin: CAM.labelLag }));
-    t.appendChild(document.createTextNode(xl.text));
-    labels.appendChild(t);
   }
   svgEl.appendChild(labels);
 
@@ -480,20 +539,20 @@ function setupCamera(svgEl, plan, opts = {}) {
   const labels = _cel('g');
   labels.setAttribute('clip-path', `url(#${clipId})`);
   labels.setAttribute('data-camera-axes', '');
+  // Export twin (ADR 0003) — same reparent, driven per frame by
+  // applyCameraAtTime instead of SMIL.
+  const used = new Set();
   plan.yLabels.forEach((yl, k) => {
-    const t = _cel('text');
-    t.setAttribute('x', yl.x); t.setAttribute('y', yl.ys[0]); t.setAttribute('opacity', yl.ops[0]);
-    t.setAttribute('dominant-baseline', 'middle');
-    t.setAttribute('style', 'text-anchor: end;');
+    const t = _tickFor(svgEl, 'y-tick-labels-svg', yl, used, labels);
+    _placeTick(t, yl.x, yl.ys[0], 'end');
+    t.setAttribute('opacity', yl.ops[0]);
     t.setAttribute('data-cam-yi', k);
-    _styleLabel(t, yl); t.appendChild(document.createTextNode(yl.text)); labels.appendChild(t);
   });
   plan.xLabels.forEach((xl, k) => {
-    const t = _cel('text');
-    t.setAttribute('x', xl.xs[0]); t.setAttribute('y', xl.y); t.setAttribute('opacity', xl.ops[0]);
-    t.setAttribute('style', 'text-anchor: middle;');
+    const t = _tickFor(svgEl, 'x-tick-labels-svg', xl, used, labels);
+    _placeTick(t, xl.xs[0], xl.y, 'middle');
+    t.setAttribute('opacity', xl.ops[0]);
     t.setAttribute('data-cam-xi', k);
-    _styleLabel(t, xl); t.appendChild(document.createTextNode(xl.text)); labels.appendChild(t);
   });
   svgEl.appendChild(labels);
 
@@ -526,14 +585,17 @@ function applyCameraAtTime(svgEl, plan, t) {
   }
   const axes = svgEl.querySelector('g[data-camera-axes]');
   if (!axes) return;
+  // Drive the TRANSFORM, matching the SMIL twin. Writing x/y here would move the
+  // <text> while its tspans stayed at their own absolute coordinates — the
+  // reparent's whole point is that the node is never re-authored, only moved.
   for (const t2 of axes.querySelectorAll('text[data-cam-yi]')) {
     const yl = plan.yLabels[+t2.getAttribute('data-cam-yi')];
-    t2.setAttribute('y', _round2(S(yl.ys, uL)));
+    t2.setAttribute('transform', `translate(${_round2(yl.x)}, ${_round2(S(yl.ys, uL))})`);
     t2.setAttribute('opacity', _round2(S(yl.ops, uL)));
   }
   for (const t2 of axes.querySelectorAll('text[data-cam-xi]')) {
     const xl = plan.xLabels[+t2.getAttribute('data-cam-xi')];
-    t2.setAttribute('x', _round2(S(xl.xs, uL)));
+    t2.setAttribute('transform', `translate(${_round2(S(xl.xs, uL))}, ${_round2(xl.y)})`);
     t2.setAttribute('opacity', _round2(S(xl.ops, uL)));
   }
   if (plan.split) {  // §2 split-draw per-frame
