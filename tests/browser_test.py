@@ -1430,7 +1430,6 @@ def test_unit_camera_extraction(page):
             firstFinite: Number.isFinite(pts[0][0]) && Number.isFinite(pts[0][1]),
             nX: ticks.x.length, nY: ticks.y.length,
             tickHasText: ticks.x.every(t => t.text) && ticks.y.every(t => t.text),
-            tickHasAppearance: ticks.y.every(t => t.fill && t.fontSize > 0 && t.weight && t.family),
             stage,
             stageSane: stage[0] === 0 && stage[2] > 600 && stage[1] > 0
                        && stage[1] + stage[3] <= 443.5 && stage[3] > 0,
@@ -1444,8 +1443,6 @@ def test_unit_camera_extraction(page):
     check('camera extract: line path → many root-space points', r['nPts'] > 20 and r['firstFinite'], str(r))
     check('camera extract: x and y ticks parsed with text',
           r['nX'] > 0 and r['nY'] > 0 and r['tickHasText'], str(r))
-    check('camera extract: ticks carry source appearance (fill/size/weight/family)',
-          r['tickHasAppearance'], str(r))
     check('camera extract: stage is full-width, within canvas height', r['stageSane'], str(r['stage']))
     check('camera extract: extractors never mutate the SVG (read-only)', r['readOnly'], str(r))
     check('camera extract: idempotent — repeat calls identical', r['stable'], str(r))
@@ -1497,15 +1494,14 @@ def test_unit_camera_inject_smil(page):
                   '<line x1="300" x2="0" y1="20" y2="20"/>' +
                   '<line x1="5" x2="5" y1="0" y2="30"/></g>' +
             '</g>' +
-            '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>' +
-            '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>' +
+            '<g id="y-tick-labels-svg"><text transform="translate(0, 302) translate(-24.2, 0) translate(24.2, 0)" style="text-anchor: start;"><tspan fill="rgb(134, 134, 134)" style="font-family: Knowledge; font-weight: 300; font-size: 14px;" x="0" dominant-baseline="auto" y="0">30</tspan></text></g><g id="x-tick-labels-svg"><text transform="translate(76.2, 14) translate(-15.4, 0) translate(15.4, 0)" style="text-anchor: middle;"><tspan fill="rgb(123, 123, 123)" style="font-family: Knowledge; font-weight: 300; font-size: 14px;" x="0" dominant-baseline="auto" y="0">July</tspan><tspan fill="rgb(123, 123, 123)" style="font-family: Knowledge; font-weight: 300; font-size: 14px;" x="0" dominant-baseline="auto" y="17">2025</tspan></text></g>' +
             '<path style="fill:none;stroke:red" d="M0,0 L100,100"/>' +
           '</g></svg>', 'image/svg+xml').documentElement;
 
         const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
         const ticks  = {
-          y:[{x:0,y:40,text:'30',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}],
-          x:[{x:100,y:250,text:'Jan',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}] };
+          y:[{x:0,y:40,text:'30'}],
+          x:[{x:100,y:250,text:'July 2025'}] };
         const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
         injectCameraSMIL(svgEl, plan);
 
@@ -1534,10 +1530,6 @@ def test_unit_camera_inject_smil(page):
             && gridLines[2].getElementsByTagName('animate').length === 0,
           axisLabels: svgEl.querySelector('g[data-camera-axes]')
             ? svgEl.querySelector('g[data-camera-axes]').getElementsByTagName('text').length : 0,
-          labelFill: (svgEl.querySelector('g[data-camera-axes] text') || {}).getAttribute
-            ? svgEl.querySelector('g[data-camera-axes] text').getAttribute('fill') : null,
-          labelSize: (svgEl.querySelector('g[data-camera-axes] text') || {}).getAttribute
-            ? svgEl.querySelector('g[data-camera-axes] text').getAttribute('font-size') : null,
           idempotent: before === 1 && after === 1,
         };
       }
@@ -1553,9 +1545,7 @@ def test_unit_camera_inject_smil(page):
           r['baselineNonScaling'] and r['baselineTrimsX2'], str(r))
     check('camera SMIL: true vertical rule is skipped (orientation guard)',
           r['verticalSkipped'], str(r))
-    check('camera SMIL: anchored axis labels rebuilt (y + x)', r['axisLabels'] == 2, str(r))
-    check('camera SMIL: rebuilt labels use the source appearance, not hard-coded white/13',
-          r['labelFill'] == 'rgb(134,134,134)' and r['labelSize'] == '14', str(r))
+    check('camera SMIL: anchored axis labels present (y + x)', r['axisLabels'] == 2, str(r))
     check('camera SMIL: idempotent — re-run does not double-wrap', r['idempotent'], str(r))
 
 
@@ -1566,8 +1556,7 @@ CAMERA_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">
                   '<line x1="300" x2="0" y1="20" y2="20"/>'
                   '<line x1="5" x2="5" y1="0" y2="30"/></g>'
                 '</g>'
-                '<g id="y-tick-labels-svg"><text><tspan>30</tspan></text></g>'
-                '<g id="x-tick-labels-svg"><text><tspan>Jan</tspan></text></g>'
+                '<g id="y-tick-labels-svg"><text transform="translate(0, 302) translate(-24.2, 0) translate(24.2, 0)" style="text-anchor: start;"><tspan fill="rgb(134, 134, 134)" style="font-family: Knowledge; font-weight: 300; font-size: 14px;" x="0" dominant-baseline="auto" y="0">30</tspan></text></g><g id="x-tick-labels-svg"><text transform="translate(76.2, 14) translate(-15.4, 0) translate(15.4, 0)" style="text-anchor: middle;"><tspan fill="rgb(123, 123, 123)" style="font-family: Knowledge; font-weight: 300; font-size: 14px;" x="0" dominant-baseline="auto" y="0">July</tspan><tspan fill="rgb(123, 123, 123)" style="font-family: Knowledge; font-weight: 300; font-size: 14px;" x="0" dominant-baseline="auto" y="17">2025</tspan></text></g>'
                 '<path style="fill:none;stroke:red" d="M0,0 L100,100"/>'
               '</g></svg>')
 
@@ -1580,8 +1569,8 @@ def test_unit_camera_export(page):
         const svgEl = new DOMParser().parseFromString(`%s`, 'image/svg+xml').documentElement;
         const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
         const ticks  = {
-          y:[{x:0,y:40,text:'30',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}],
-          x:[{x:100,y:250,text:'Jan',fontSize:14,fill:'rgb(134,134,134)',weight:'300',family:'Knowledge'}] };
+          y:[{x:0,y:40,text:'30'}],
+          x:[{x:100,y:250,text:'July 2025'}] };
         const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
         setupCamera(svgEl, plan);
         const plot = svgEl.querySelector('[id="svg-main-svg"]');
@@ -1596,9 +1585,9 @@ def test_unit_camera_export(page):
         const yLabel = svgEl.querySelector('text[data-cam-yi]');
 
         applyCameraAtTime(svgEl, plan, 0);      // wide
-        const s0 = scaleOf(), y0 = yLabel.getAttribute('y');
+        const s0 = scaleOf(), y0 = yLabel.getAttribute('transform');
         applyCameraAtTime(svgEl, plan, 4.8);    // ~summit (keytimes .46–.50)
-        const sMid = scaleOf(), yMid = yLabel.getAttribute('y');
+        const sMid = scaleOf(), yMid = yLabel.getAttribute('transform');
         // Per-frame driver must trim the baseline's LEFT end (x2), leaving its
         // right end (x1) intact — else the RTL baseline collapses on export.
         const baseRightIntactPerFrame = gridLines[1].getAttribute('x1') === '300';
@@ -1610,13 +1599,13 @@ def test_unit_camera_export(page):
         return {
           scaffolded: !!svgEl.querySelector('g[data-camera]') && !!svgEl.querySelector('g[data-camera-axes]'),
           noAnimates: plot.getElementsByTagName('animateTransform').length === 0,
-          s0, sMid, labelMoved: y0 !== yMid,
+          s0, sMid, labelMoved: !!y0 && !!yMid && y0 !== yMid,
           baselineNonScaling: gridLines[1].getAttribute('vector-effect') === 'non-scaling-stroke',
           baselineTrimsX2: baseTrimmedAtSetup,
           baseRightIntactPerFrame,
           verticalSkipped: gridLines[2].getAttribute('vector-effect') !== 'non-scaling-stroke',
-          labelFill: yLabel.getAttribute('fill'),
-          labelSize: yLabel.getAttribute('font-size'),
+          tspanFill: yLabel.querySelector('tspan').getAttribute('fill'),
+          reparented: !yLabel.hasAttribute('data-cam-rebuilt'),
           idempotent: before === 1 && after === 1,
         };
       }
@@ -1632,9 +1621,222 @@ def test_unit_camera_export(page):
           r['baseRightIntactPerFrame'], str(r))
     check('camera export: true vertical rule is skipped (orientation guard)',
           r['verticalSkipped'], str(r))
-    check('camera export: rebuilt labels use source appearance, not hard-coded white/13',
-          r['labelFill'] == 'rgb(134,134,134)' and r['labelSize'] == '14', str(r))
+    check('camera export: label is the REPARENTED source node — its tspan fill survives '
+          'by construction, so no appearance can be hard-coded (issue #21)',
+          r['reparented'] and r['tspanFill'] == 'rgb(134, 134, 134)', str(r))
     check('camera export: setupCamera idempotent', r['idempotent'], str(r))
+
+
+def test_unit_camera_label_reparent(page):
+    # Issue #21 — the camera MOVES the original tick nodes instead of rebuilding
+    # them. Each check below is one of the silent render breaks the adversarial
+    # review found: none of them throws, all of them just look wrong.
+    #
+    # The old fixtures (<text><tspan>30</tspan></text>) would pass on broken
+    # code, which is why CAMERA_SVG now carries the real Datawrapper shape:
+    # position in a stacked transform, anchor in inline style, fill and font on
+    # the tspan, dominant-baseline="auto" on the tspan, and a two-tspan date.
+    r = page.evaluate("""
+      () => {
+        const build = () => new DOMParser()
+          .parseFromString(`%s`, 'image/svg+xml').documentElement;
+        const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
+        const mkTicks = () => ({ y:[{x:0,y:40,text:'30'}], x:[{x:100,y:250,text:'July 2025'}] });
+        const mkPlan = () => buildCameraPlan(points, [0,10,300,260], mkTicks(), 10,
+                                             { ox:0, oy:50, gx:20 });
+
+        // ---- SMIL system -----------------------------------------------------
+        const a = build();
+        const srcY = a.querySelector('[id="y-tick-labels-svg"] text');
+        const srcX = a.querySelector('[id="x-tick-labels-svg"] text');
+        injectCameraSMIL(a, mkPlan());
+        const axesA = a.querySelector('g[data-camera-axes]');
+        const yA = axesA.querySelector('text[opacity]');
+        const xA = [...axesA.querySelectorAll('text')].find(t => t !== yA);
+
+        // ---- export system ---------------------------------------------------
+        const b = build();
+        setupCamera(b, mkPlan());
+        const yB = b.querySelector('text[data-cam-yi]');
+        const xB = b.querySelector('text[data-cam-xi]');
+        const xBefore = xB.getAttribute('transform');
+        applyCameraAtTime(b, mkPlan(), 4.8);
+        const xAfter = xB.getAttribute('transform');
+
+        const tspans = el => [...el.querySelectorAll('tspan')].map(s => ({
+          y: s.getAttribute('y'), x: s.getAttribute('x'),
+          fill: s.getAttribute('fill'), db: s.getAttribute('dominant-baseline'),
+          text: s.textContent,
+        }));
+
+        return {
+          // 1. identity: the node in the axes group IS the source node, moved
+          movedNotCopied: yA === srcY && xA === srcX,
+          noRebuildMarker: !yA.hasAttribute('data-cam-rebuilt')
+                        && !xA.hasAttribute('data-cam-rebuilt'),
+          sourceGroupEmptied: a.querySelectorAll('[id="y-tick-labels-svg"] text').length === 0,
+
+          // 2. the source's stacked transform is REPLACED, not stacked onto
+          yTransform: yA.getAttribute('transform'),
+          xTransform: xA.getAttribute('transform'),
+
+          // 3. anchor overridden via inline STYLE (source y-tick was `start`;
+          //    a presentation attribute would lose to the inline style)
+          yAnchor: yA.style.textAnchor,
+          xAnchor: xA.style.textAnchor,
+
+          // 4. two-tspan stacked date survives verbatim — structure, y-stack,
+          //    fill and dominant-baseline all untouched
+          xTspans: tspans(xA),
+          xText: xA.textContent,
+
+          // 5. both systems agree (ADR 0003 parity)
+          parityTspans: JSON.stringify(tspans(xA)) === JSON.stringify(tspans(xB)),
+          parityAnchor: yA.style.textAnchor === yB.style.textAnchor,
+
+          // 6. the per-frame driver moves the transform, not x/y
+          xMovedPerFrame: xBefore !== xAfter && /translate/.test(xAfter),
+          noStrayXY: !xB.hasAttribute('x') && !xB.hasAttribute('y'),
+        };
+      }
+    """ % CAMERA_SVG.replace('`', ''))
+
+    check('reparent: axis labels are the MOVED source nodes, not rebuilds '
+          '(a rebuild is what forced someone to pick a colour — ADR 0009 §1)',
+          r['movedNotCopied'] and r['noRebuildMarker'], str(r))
+    check('reparent: source tick group is emptied — the node moved, not cloned',
+          r['sourceGroupEmptied'], str(r))
+    check("reparent: source's stacked transform is REPLACED by the camera's translate "
+          '(left in place, camera position stacks on top and the label lands ~76px off)',
+          r['yTransform'] and 'translate' in r['yTransform']
+          and r['yTransform'].count('translate') == 1
+          and r['xTransform'].count('translate') == 1, str(r))
+    check('reparent: anchor overridden via inline style, not a presentation attribute '
+          '(source y-tick is `start` and must become `end` for the gutter)',
+          r['yAnchor'] == 'end' and r['xAnchor'] == 'middle', str(r))
+    check('reparent: two-tspan stacked date survives verbatim — y-stack 0/17 kept, '
+          'tspan fill and dominant-baseline untouched, textContent not overwritten',
+          len(r['xTspans']) == 2
+          and [t['y'] for t in r['xTspans']] == ['0', '17']
+          and all(t['fill'] == 'rgb(123, 123, 123)' for t in r['xTspans'])
+          and all(t['db'] == 'auto' for t in r['xTspans'])
+          and r['xText'] == 'July2025', str(r['xTspans']))
+    check('reparent: SMIL and export produce identical reparented nodes (ADR 0003)',
+          r['parityTspans'] and r['parityAnchor'], str(r))
+    check('reparent: per-frame driver animates the transform and never re-authors '
+          'x/y (tspan coordinates are absolute — writing x/y strands them)',
+          r['xMovedPerFrame'] and r['noStrayXY'], str(r))
+
+
+def test_camera_reparent_real_chart_position(page):
+    # The synthetic fixtures above are the issue's own warning: they pass on
+    # broken code. This is the check that cannot be faked — a LIVE chart, real
+    # layout, and the reparented label's actual rendered position compared with
+    # where the plan says it should be.
+    #
+    # It is the guard for the transform bug specifically: the source's position
+    # lives in a stacked transform, so leaving it in place puts the label ~76px
+    # out. Nothing throws; it just renders wrong.
+    r = page.evaluate("""
+      async () => {
+        const svg = await (await fetch('/examples/multi_line_graph.svg')).text();
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;left:-99999px;top:0;width:900px;height:600px';
+        host.innerHTML = svg;
+        document.body.appendChild(host);
+        const svgEl = host.querySelector('svg');
+        try {
+          await embedFonts(svgEl);
+          await ensureFontsLoaded();
+
+          const path  = svgEl.querySelector('[id="lines-svg"] path');
+          const pts   = extractLinePoints(svgEl, path);
+          const ticks = extractTicks(svgEl);
+          const stage = detectStage(svgEl);
+          const plan  = buildCameraPlan(pts, stage, ticks, 8);
+          injectCameraSMIL(svgEl, plan);
+
+          // Root-space position each reparented label actually renders at.
+          const inv = svgEl.getScreenCTM().inverse();
+          const axes = svgEl.querySelector('g[data-camera-axes]');
+          const texts = [...axes.querySelectorAll('text')];
+          const at = t => { const m = inv.multiply(t.getScreenCTM()); return [m.e, m.f]; };
+
+          // y-labels come first, in plan order.
+          const errs = [];
+          plan.yLabels.forEach((yl, i) => {
+            const [x, y] = at(texts[i]);
+            errs.push(Math.hypot(x - yl.x, y - yl.ys[0]));
+          });
+          plan.xLabels.forEach((xl, i) => {
+            const [x, y] = at(texts[plan.yLabels.length + i]);
+            errs.push(Math.hypot(x - xl.xs[0], y - xl.y));
+          });
+
+          const multi = texts.filter(t => t.querySelectorAll('tspan').length > 1);
+          return {
+            nY: plan.yLabels.length, nX: plan.xLabels.length,
+            nLabels: texts.length,
+            maxErr: Math.max(...errs),
+            rebuilt: texts.filter(t => t.hasAttribute('data-cam-rebuilt')).length,
+            multiTspanKept: multi.length,
+            multiTspanYs: multi.length ? [...multi[0].querySelectorAll('tspan')]
+                                          .map(s => s.getAttribute('y')) : [],
+          };
+        } finally { document.body.removeChild(host); }
+      }
+    """)
+    check('reparent (real chart): every tick reparented from the source — no rebuild '
+          'fallbacks, so the matching actually found them',
+          r['rebuilt'] == 0 and r['nLabels'] == r['nY'] + r['nX'] and r['nLabels'] > 4, str(r))
+    check('reparent (real chart): rendered position within 1px of the plan — proves the '
+          "source's stacked transform was replaced, not stacked on top (~76px error)",
+          r['maxErr'] < 1.0, str(r))
+    check('reparent (real chart): real two-tspan stacked date survives with its y-stack',
+          r['multiTspanKept'] >= 1 and r['multiTspanYs'][:2] == ['0', '17'], str(r))
+
+
+def test_unit_camera_label_reparent_empty_ticks(page):
+    # extractTicks drops empty ticks (`.filter(d => d.text)`), so plan index N is
+    # NOT source node N. Matching by index would shift every subsequent label —
+    # and throw in export on an undefined `.ys`. Match by text instead.
+    r = page.evaluate("""
+      () => {
+        const NS = 'http://www.w3.org/2000/svg';
+        // Middle y-tick is empty, exactly as a suppressed tick appears.
+        const svg = '<svg xmlns="' + NS + '" width="400" height="300">' +
+          '<g id="svg-main-svg" transform="translate(0,50)">' +
+            '<g id="group-svg" transform="translate(20,0)">' +
+              '<g id="y-grid-lines-svg"><line x1="0" x2="300" y1="10" y2="10"/></g>' +
+            '</g>' +
+            '<g id="y-tick-labels-svg">' +
+              '<text transform="translate(0,10)"><tspan x="0" y="0">10</tspan></text>' +
+              '<text transform="translate(0,20)"><tspan x="0" y="0"></tspan></text>' +
+              '<text transform="translate(0,30)"><tspan x="0" y="0">30</tspan></text>' +
+            '</g>' +
+            '<g id="x-tick-labels-svg"><text transform="translate(5,5)">' +
+              '<tspan x="0" y="0">Jan</tspan></text></g>' +
+            '<path style="fill:none;stroke:red" d="M0,0 L100,100"/>' +
+          '</g></svg>';
+        const svgEl = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+        const points = [[0,50],[10,48],[20,52],[30,20],[40,80],[50,78],[60,82]];
+        // What extractTicks would yield: the empty one is gone.
+        const ticks = { y: [{x:0,y:10,text:'10'}, {x:0,y:30,text:'30'}],
+                        x: [{x:5,y:5,text:'Jan'}] };
+        const plan = buildCameraPlan(points, [0,10,300,260], ticks, 10, { ox:0, oy:50, gx:20 });
+        setupCamera(svgEl, plan);
+        const labels = [...svgEl.querySelectorAll('text[data-cam-yi]')]
+          .map(t => ({ i: t.getAttribute('data-cam-yi'), text: t.textContent.trim(),
+                       rebuilt: t.hasAttribute('data-cam-rebuilt') }));
+        return { labels, count: labels.length };
+      }
+    """)
+    check('reparent: a dropped empty tick does not shift the mapping — plan label N '
+          'binds to the node with matching TEXT, not source index N',
+          r['count'] == 2
+          and r['labels'][0]['text'] == '10' and r['labels'][0]['i'] == '0'
+          and r['labels'][1]['text'] == '30' and r['labels'][1]['i'] == '1'
+          and not any(l['rebuilt'] for l in r['labels']), str(r))
 
 
 def test_unit_split_trace(page):
@@ -1703,6 +1905,9 @@ def main():
             test_unit_camera_plan,
             test_unit_camera_inject_smil,
             test_unit_camera_export,
+            test_unit_camera_label_reparent,
+            test_camera_reparent_real_chart_position,
+            test_unit_camera_label_reparent_empty_ticks,
             test_unit_split_trace,
             test_detection_per_chart,
             test_unit_translate_y,
