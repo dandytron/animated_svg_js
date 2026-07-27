@@ -38,6 +38,16 @@ let _fontBytesPromise = null;
 // so adding twice really does register two faces.
 let _facesRegistered = false;
 
+// Test seam. The byte cache is module-level and shared, and app boot now warms
+// it — so a test that stubs `fetch` to simulate a missing weight would find the
+// bytes already cached and never exercise its stub. Resetting is the only way to
+// test the fetch path itself after boot has run.
+function _resetFontCaches() {
+  _fontCssPromise = null;
+  _fontBytesPromise = null;
+  _facesRegistered = false;
+}
+
 async function _loadFontBytes() {
   const settled = await Promise.allSettled(FONT_FACES.map(async ({ weight, file }) => {
     const resp = await fetch(new URL(file, document.baseURI).href);

@@ -1050,6 +1050,9 @@ def test_unit_embed_fonts_partial(page):
         window.fetch = (u, o) => String(u).includes('Bold')
           ? Promise.resolve(new Response('', { status: 404 }))
           : real(u, o);
+        // App boot warms the shared byte cache, so without this the stub below
+        // is never consulted and both weights come back regardless.
+        _resetFontCaches();
         const dw = new DOMParser().parseFromString(
           '<svg xmlns="' + NS + '"><defs/><text style="font-family: Knowledge;">hi</text></svg>',
           'image/svg+xml').documentElement;
@@ -1063,10 +1066,63 @@ def test_unit_embed_fonts_partial(page):
         };
       }
     """)
-    page.goto(BASE)  # discard the stubbed fetch and the partial-CSS cache
+    page.goto(BASE)  # discard the stubbed fetch and the partial caches
     check('embedFonts: a failed weight degrades that weight only (allSettled) — '
           '300 still embeds when 700 404s',
           r['faceCount'] == 1 and r['has300'] and not r['has700'], str(r))
+
+
+def test_stage_has_the_real_font_without_previewing(page):
+    # Reported from real use: load a chart and the Stage renders in Times New
+    # Roman; tab away and back and it becomes Knowledge.
+    #
+    # The Stage is raw Datawrapper markup (injectSvg does innerHTML = state.svg).
+    # It REFERENCES `font-family: Knowledge` but carries no face, and nothing on
+    # the load path embedded one — the only embedFonts call was inside preview().
+    # So the Stage was always the fallback serif and only the preview was right.
+    # registerFontsAtDocument then made it flip *late*, once something else
+    # happened to call ensureFontsLoaded.
+    #
+    # Measured, not eyeballed: compare the Stage's own rendered text width
+    # against the same string in a known-fallback family.
+    page.goto(BASE)
+    r = page.evaluate("""
+      async () => {
+        // Load a chart the way a user does — no preview, no export.
+        const svg = await (await fetch('/examples/multi_line_graph.svg')).text();
+        loadSvgString(svg);
+        await document.fonts.ready;
+
+        const stageText = document.querySelector('#svg-container svg text');
+        const real = stageText.getComputedTextLength();
+
+        // Same string, same size, in a family that can never resolve.
+        const probe = stageText.cloneNode(true);
+        // Rewrite the family on the node AND its tspans: Datawrapper puts
+        // font-family on the tspan, so changing only the parent leaves the real
+        // face in play and the probe measures identically to the original.
+        const swap = el => {
+          const st = el.getAttribute('style');
+          if (st && st.includes('Knowledge'))
+            el.setAttribute('style', st.replace(/Knowledge/g, 'NoSuchFaceAnywhere'));
+        };
+        swap(probe); probe.querySelectorAll('tspan').forEach(swap);
+        stageText.parentNode.appendChild(probe);
+        const fallback = probe.getComputedTextLength();
+        probe.remove();
+
+        return {
+          real: +real.toFixed(3), fallback: +fallback.toFixed(3),
+          knowledgeRegistered: [...document.fonts].some(f => f.family === 'Knowledge'),
+        };
+      }
+    """)
+    check('stage: the real font is registered at boot, before any preview '
+          '(Stage is raw markup — it needs the family at document level)',
+          r['knowledgeRegistered'], str(r))
+    check('stage: Stage text measures DIFFERENTLY from the fallback face — i.e. it '
+          'is actually rendering in Knowledge, not Times New Roman',
+          abs(r['real'] - r['fallback']) > 1.0, str(r))
 
 
 def test_unit_app_mounts_into_shadow_root(page):
@@ -2063,6 +2119,7 @@ def main():
             test_background_rect_detection,
             test_unit_embed_fonts_partial,
             test_unit_ensure_fonts_loaded,
+            test_stage_has_the_real_font_without_previewing,
             test_unit_app_mounts_into_shadow_root,
             test_unit_fonts_survive_shadow_root,
             test_unit_contract_stub_ready,

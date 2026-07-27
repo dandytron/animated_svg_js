@@ -58,6 +58,19 @@ let _mountedRoot = null;
 function initApp() {
   if (_mountedRoot === root) return;
   _mountedRoot = root;
+
+  // Warm the real font at boot, not at first preview.
+  //
+  // The Stage is raw Datawrapper markup (injectSvg does innerHTML = state.svg).
+  // It REFERENCES `font-family: Knowledge` but carries no face, and nothing on
+  // the load path embeds one — so the Stage rendered in the fallback serif while
+  // only the preview looked right. Registering at document level makes the
+  // family available to everything in the document, the Stage included.
+  //
+  // Kicked off here rather than in injectSvg because the fetch + decode is async
+  // and injectSvg is synchronous: starting at boot means the face is ready long
+  // before a chart is loaded, instead of swapping in visibly afterwards.
+  registerFontsAtDocument(); // fonts.js — fire and forget, best-effort
   $('chart-id-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') loadSvg();
   });
