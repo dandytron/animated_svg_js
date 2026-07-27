@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>&lt;chart-animator&gt; — integration demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!--
+  Runnable demo of the integration contract (docs/integration-contract.md).
+
+  Deliberately plain: one script tag, one custom element, four event listeners.
+  If integrating takes more than what is on this page, the contract is wrong.
+
+  Serve from the repo root so examples/ and fonts/ resolve:
+      python3 server.py   →   http://localhost:5001/integration-demo.html
+-->
+
+<script src="chart-animator.js" defer></script>
+
+<style>
+  body {
+    font: 400 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 60rem; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+    color: #1B1F26; background: #F6F7F9;
+  }
+  h1 { font-size: 1.4rem; letter-spacing: -.015em; margin: 0 0 .25rem; }
+  p.sub { color: #6A7383; margin: 0 0 1.5rem; }
+  fieldset { border: 1px solid #DFE3E9; border-radius: 6px; margin: 0 0 1.5rem; padding: 1rem; }
+  legend { font: 600 .68rem/1 ui-monospace, Menlo, monospace; letter-spacing: .1em;
+           text-transform: uppercase; color: #6A7383; padding: 0 .4em; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  button, select { font: inherit; font-size: .875rem; padding: .4rem .7rem;
+                   border: 1px solid #C7CED8; border-radius: 4px; background: #fff; cursor: pointer; }
+  button:focus-visible, select:focus-visible { outline: 2px solid #0E7C86; outline-offset: 2px; }
+  #log { font: .78rem/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+         background: #EFF2F5; border: 1px solid #DFE3E9; border-radius: 4px;
+         padding: .75rem; margin-top: 1.5rem; max-height: 18rem; overflow: auto;
+         white-space: pre-wrap; word-break: break-word; }
+  #log b { color: #0E7C86; }
+  #log b.err { color: #B45309; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #E6E9EE; background: #15181D; }
+    fieldset { border-color: #2C323B; }
+    button, select { background: #1B1F26; color: inherit; border-color: #3A424E; }
+    #log { background: #1B1F26; border-color: #2C323B; }
+    p.sub, legend { color: #949CAB; }
+  }
+</style>
+
+<h1>&lt;chart-animator&gt; integration demo</h1>
+<p class="sub">The stub component, wired exactly as the exporter would wire it.</p>
+
+<fieldset>
+  <legend>Host controls</legend>
+  <div class="row">
+    <select id="chart">
+      <option value="examples/multi_line_graph.svg|d3-lines">Line chart — d3-lines (supported)</option>
+      <option value="examples/bar_chart_iphone.svg|column-chart">Bar chart — column-chart (supported)</option>
+      <option value="examples/scatter_plot.svg|d3-scatter-plot">Scatter — d3-scatter-plot (supported)</option>
+      <option value="examples/area_graph_bv.svg|d3-area">Area — d3-area (supported)</option>
+      <option value="examples/multi_line_graph.svg|d3-pies">Line SVG, declared as d3-pies (unsupported type)</option>
+      <option value="examples/multi_line_graph.svg|">No chartType sent (advisory only)</option>
+      <option value="__BAD__|d3-lines">Malformed SVG (error path)</option>
+      <option value="__NODIM__|d3-lines">SVG with no width/height (error path)</option>
+    </select>
+    <button id="load">Load into component</button>
+    <button id="black">Toggle black look</button>
+    <button id="alpha">Toggle alpha</button>
+  </div>
+</fieldset>
+
+<chart-animator id="animator"></chart-animator>
+
+<div id="log">events appear here…</div>
+
+<script>
+  const el = document.getElementById('animator');
+  const logEl = document.getElementById('log');
+  let first = true;
+
+  function log(name, detail, isErr) {
+    if (first) { logEl.textContent = ''; first = false; }
+    const b = document.createElement('b');
+    if (isErr) b.className = 'err';
+    b.textContent = name;
+    logEl.append(b, ' ' + JSON.stringify(detail, (k, v) =>
+      v instanceof Blob ? `Blob(${v.size}b, ${v.type})` : v) + '\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // ── the entire integration ────────────────────────────────────────────────
+  el.addEventListener('ready',    e => log('ready',    e.detail));
+  el.addEventListener('exported', e => log('exported', e.detail));
+  el.addEventListener('cancel',   e => log('cancel',   e.detail));
+  el.addEventListener('error',    e => log('error',    e.detail, true));
+
+  async function load() {
+    const [path, type] = document.getElementById('chart').value.split('|');
+    let svg;
+    if (path === '__BAD__') {
+      svg = '<svg><this is not xml';
+    } else if (path === '__NODIM__') {
+      svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>';
+    } else {
+      svg = await (await fetch(path)).text();
+    }
+    el.chartType = type;          // pass the type when you have it
+    el.chartId = 'demo1';
+    el.svg = svg;                 // assigning svg (re)initialises
+  }
+
+  document.getElementById('load').addEventListener('click', load);
+  document.getElementById('black').addEventListener('click',
+    () => { el.look = el.look === 'black' ? 'white' : 'black'; log('host', { look: el.look }); });
+  document.getElementById('alpha').addEventListener('click',
+    () => { el.alpha = !el.alpha; log('host', { alpha: el.alpha }); });
+
+  addEventListener('DOMContentLoaded', load);
+</script>
