@@ -1069,6 +1069,72 @@ def test_unit_embed_fonts_partial(page):
           r['faceCount'] == 1 and r['has300'] and not r['has700'], str(r))
 
 
+def test_unit_app_mounts_into_shadow_root(page):
+    # The point of the root-relative refactor: the SAME app.js drives a
+    # standalone page and a shadow-rooted component. Every other test in this
+    # file exercises the standalone path, so this is the only thing standing
+    # between us and discovering at integration time that ~50 lookups quietly
+    # return null (a missed lookup does not throw — it returns null and the
+    # feature is simply dead).
+    page.goto(BASE)
+    r = page.evaluate("""
+      async () => {
+        // Take the real UI markup, minus its scripts, into a shadow root.
+        const html = await (await fetch('/index.html')).text();
+        const doc  = new DOMParser().parseFromString(html, 'text/html');
+        doc.querySelectorAll('script').forEach(s => s.remove());
+
+        const host = document.createElement('div');
+        host.style.cssText = 'position:absolute;left:-9999px;top:0';
+        document.body.appendChild(host);
+        const shadow = host.attachShadow({ mode: 'open' });
+        [...doc.body.children].forEach(n => shadow.appendChild(n.cloneNode(true)));
+        // Styles live in <head> in index.html; carry them so layout is real.
+        doc.querySelectorAll('head style').forEach(n => shadow.appendChild(n.cloneNode(true)));
+
+        mountApp(shadow);
+
+        const q = id => shadow.getElementById(id);
+        // A representative spread: entry, controls, queue, export, preview.
+        const ids = ['chart-id-input', 'load-btn', 'test-btn', 'total-duration',
+                     'camera-toggle', 'camera-split-toggle', 'queue-all-btn',
+                     'preview-btn', 'export-btn', 'export-menu', 'preview-container'];
+        const missing = ids.filter(i => !q(i));
+
+        // Wiring, not just presence: the camera toggle must reach state.camera
+        // through a root-relative lookup.
+        const cam = q('camera-toggle'), split = q('camera-split-toggle');
+        const before = state.camera;
+        cam.checked = true;
+        cam.dispatchEvent(new Event('change'));
+        const afterOn = state.camera && state.camera.enabled === true;
+        const splitEnabled = split.disabled === false;
+        cam.checked = false;
+        cam.dispatchEvent(new Event('change'));
+        const afterOff = state.camera === null;
+
+        // index.html itself carries these ids in light DOM, so their presence
+        // proves nothing. What matters is that we wired the SHADOW's nodes and
+        // left the document's alone.
+        const distinct = document.getElementById('camera-toggle') !== q('camera-toggle');
+        const hostUntouched = document.getElementById('camera-toggle').checked === false;
+
+        host.remove();
+        return { missing, before, afterOn, afterOff, splitEnabled,
+                 distinct, hostUntouched };
+      }
+    """)
+    check('mount: every UI control resolves through the shadow root — no lookup '
+          'silently returns null (returns null, does not throw)',
+          r['missing'] == [], f"missing: {r['missing']}")
+    check('mount: controls are WIRED through the shadow root — toggling camera '
+          'reaches state.camera and enables split-draw',
+          r['afterOn'] and r['splitEnabled'] and r['afterOff'], str(r))
+    check('mount: the shadow root owns its own nodes — same ids as the host page, '
+          'different elements, and the host page controls are left untouched',
+          r['distinct'] and r['hostUntouched'], str(r))
+
+
 def test_unit_fonts_survive_shadow_root(page):
     # Spike A, made permanent. @font-face inside a SHADOW ROOT is inert: font
     # faces resolve at document level, so the rule embedFonts writes into the
@@ -1997,6 +2063,7 @@ def main():
             test_background_rect_detection,
             test_unit_embed_fonts_partial,
             test_unit_ensure_fonts_loaded,
+            test_unit_app_mounts_into_shadow_root,
             test_unit_fonts_survive_shadow_root,
             test_unit_contract_stub_ready,
             test_unit_contract_stub_errors_and_export,
