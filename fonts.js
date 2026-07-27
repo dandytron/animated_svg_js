@@ -28,6 +28,35 @@ const FONT_FACES = [
 // per session, not on every build. Holds a Promise<string>.
 let _fontCssPromise = null;
 
+// Cache the raw woff bytes too. Both consumers need them and they must not be
+// fetched twice: the inline @font-face (export portability) and the
+// document-level FontFace registration (live measurement) are the same bytes
+// serving different masters. Holds a Promise<Array<{weight, buf}>>.
+let _fontBytesPromise = null;
+
+// Guards document.fonts.add — FontFaceSet is a set of objects, not of families,
+// so adding twice really does register two faces.
+let _facesRegistered = false;
+
+async function _loadFontBytes() {
+  const settled = await Promise.allSettled(FONT_FACES.map(async ({ weight, file }) => {
+    const resp = await fetch(new URL(file, document.baseURI).href);
+    if (!resp.ok) throw new Error(`${file} → ${resp.status}`);
+    return { weight, buf: await resp.arrayBuffer() };
+  }));
+  const out = [];
+  for (const s of settled) {
+    if (s.status === 'fulfilled') out.push(s.value);
+    else console.warn('fonts.js: a font weight failed to fetch —', s.reason && s.reason.message);
+  }
+  return out;
+}
+
+function _fontBytes() {
+  if (!_fontBytesPromise) _fontBytesPromise = _loadFontBytes().catch(() => []);
+  return _fontBytesPromise;
+}
+
 // Encode bytes as base64 in chunks — String.fromCharCode.apply on the whole
 // array blows the argument-count limit for fonts this size.
 function _bytesToBase64(bytes) {
@@ -40,24 +69,54 @@ function _bytesToBase64(bytes) {
 }
 
 async function _buildFontCss() {
-  // allSettled, not all: one weight failing to fetch must not throw away the
-  // others. With Promise.all a single missing/404 woff rejected the whole build
-  // and NOTHING embedded — so a deploy that shipped Light but not Bold got no
-  // font at all, the exact §0 failure this module exists to prevent. Now a
-  // missing weight degrades that weight only.
-  const settled = await Promise.allSettled(FONT_FACES.map(async ({ family, weight, file }) => {
-    const resp = await fetch(new URL(file, document.baseURI).href);
-    if (!resp.ok) throw new Error(`${file} → ${resp.status}`);
-    const b64 = _bytesToBase64(new Uint8Array(await resp.arrayBuffer()));
-    return `@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};`
-         + `src:url(data:font/woff;base64,${b64}) format('woff');}`;
+  // A missing weight degrades that weight only — never the whole build. With
+  // Promise.all a single 404 rejected everything and NOTHING embedded, so a
+  // deploy that shipped Light but not Bold got no font at all: the exact §0
+  // failure this module exists to prevent. _loadFontBytes keeps that property.
+  const FAMILY = FONT_FACES[0].family;
+  const bytes = await _fontBytes();
+  return bytes.map(({ weight, buf }) =>
+    `@font-face{font-family:'${FAMILY}';font-style:normal;font-weight:${weight};`
+    + `src:url(data:font/woff;base64,${_bytesToBase64(new Uint8Array(buf))}) format('woff');}`
+  ).join('');
+}
+
+// Register the faces on document.fonts.
+//
+// Required because an @font-face rule inside a SHADOW ROOT is inert. Font faces
+// resolve at document level, so the rule embedFonts writes into the SVG's <defs>
+// never registers when that SVG lives in a shadow root — document.fonts stays
+// empty, ensureFontsLoaded has nothing to load, and `ready` resolves against the
+// fallback face.
+//
+// Measured 2026-07-27 on `Knowledge 300 @ 21px`, each case in its own context:
+//
+//   light DOM,  embedded   251.000   document.fonts: Knowledge 300/700 loaded
+//   shadow root, embedded  303.000   document.fonts: (empty)
+//   light DOM,  no font    303.000   document.fonts: (empty)
+//
+// The shadow case measured EXACTLY as the fallback — 20.7% wide, the §0
+// signature. With this registration it returns 251.000, identical to light DOM.
+//
+// The inline embed stays: export rasterises the SVG standalone and needs the
+// bytes travelling inside it. The two paths serve different masters and both are
+// required.
+async function registerFontsAtDocument() {
+  if (_facesRegistered) return;
+  if (typeof FontFace === 'undefined' || !document.fonts || !document.fonts.add) return;
+  const FAMILY = FONT_FACES[0].family;
+  const bytes = await _fontBytes();
+  if (!bytes.length) return;
+  _facesRegistered = true;   // set before awaiting loads so concurrent calls don't double-add
+  await Promise.all(bytes.map(async ({ weight, buf }) => {
+    try {
+      const face = new FontFace(FAMILY, buf, { weight: String(weight), style: 'normal' });
+      await face.load();
+      document.fonts.add(face);
+    } catch (err) {
+      console.warn('fonts.js: could not register weight', weight, '—', err && err.message);
+    }
   }));
-  const rules = [];
-  for (const s of settled) {
-    if (s.status === 'fulfilled') rules.push(s.value);
-    else console.warn('fonts.js: a font weight failed to embed —', s.reason && s.reason.message);
-  }
-  return rules.join('');
 }
 
 // Build (once, cached) the inlined @font-face CSS. Best-effort: returns '' if
@@ -85,6 +144,10 @@ function loadFontCss() {
 async function ensureFontsLoaded() {
   if (!document.fonts || !document.fonts.load) return;
   try {
+    // Register first: document.fonts.load can only load a face the document
+    // already knows about. Inside a shadow root nothing else registers one, so
+    // without this the load is a no-op and `ready` resolves against the fallback.
+    await registerFontsAtDocument();
     await Promise.all(FONT_FACES.map(({ weight, family }) =>
       document.fonts.load(`${weight} 21px ${family}`).catch(() => {})));
     if (document.fonts.ready) await document.fonts.ready;

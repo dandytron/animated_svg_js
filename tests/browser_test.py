@@ -1069,6 +1069,62 @@ def test_unit_embed_fonts_partial(page):
           r['faceCount'] == 1 and r['has300'] and not r['has700'], str(r))
 
 
+def test_unit_fonts_survive_shadow_root(page):
+    # Spike A, made permanent. @font-face inside a SHADOW ROOT is inert: font
+    # faces resolve at document level, so the rule embedFonts writes into the
+    # SVG's <defs> never registers when that SVG lives in a shadow root.
+    # document.fonts stays empty, ensureFontsLoaded has nothing to load, and
+    # `ready` resolves against the FALLBACK face — glyphs measure ~20% wide and
+    # every bubble-up letter lands wrong (§0 failure mode #3).
+    #
+    # This is latent until the component ships with a shadow root, which is
+    # exactly when it becomes unfixable-in-a-hurry. Hence a standing test.
+    #
+    # Isolation is the whole point: a first version of this probe ran all three
+    # scenarios in one page and reported a false PASS, because the light-DOM case
+    # had already warmed document.fonts. Fresh page.goto between each.
+    def measure(js_mount):
+        page.goto(BASE)   # fresh document => cold document.fonts
+        return page.evaluate("""
+          async () => {
+            const NS = 'http://www.w3.org/2000/svg';
+            const host = document.createElement('div');
+            host.style.cssText = 'position:absolute;left:-9999px;top:0';
+            document.body.appendChild(host);
+            const svg = document.createElementNS(NS, 'svg');
+            svg.setAttribute('width', '600'); svg.setAttribute('height', '80');
+            const t = document.createElementNS(NS, 'text');
+            t.setAttribute('style', 'font-family: %s; font-weight: 300; font-size: 21px');
+            t.setAttribute('x', '0'); t.setAttribute('y', '40');
+            t.textContent = 'Reuters poll: RBNZ forecasts';
+            svg.appendChild(t);
+            %s
+            if (%s) { await embedFonts(svg); await ensureFontsLoaded(); }
+            return {
+              total: +t.getComputedTextLength().toFixed(3),
+              faces: [...document.fonts].map(f => f.family + ' ' + f.weight),
+            };
+          }
+        """ % js_mount)
+
+    ref    = measure(('Knowledge', 'host.appendChild(svg);', 'true'))
+    shadow = measure(('Knowledge', 'host.attachShadow({mode:"open"}).appendChild(svg);', 'true'))
+    ctrl   = measure(('NoSuchFaceAnywhere', 'host.appendChild(svg);', 'false'))
+
+    spread = abs(ref['total'] - ctrl['total'])
+    check('fonts: the fallback control actually discriminates (embedded vs fallback differ) '
+          '— without this the comparison below proves nothing',
+          spread > 1.0, f"ref={ref['total']} ctrl={ctrl['total']}")
+    check('fonts: text inside a SHADOW ROOT measures identically to light DOM — '
+          '@font-face is inert in a shadow root, so registerFontsAtDocument must '
+          'put the faces on document.fonts (Spike A, 2026-07-27)',
+          abs(shadow['total'] - ref['total']) < 0.5,
+          f"shadow={shadow['total']} ref={ref['total']} ctrl={ctrl['total']} "
+          f"faces={shadow['faces']}")
+    check('fonts: registration reaches document.fonts from inside a shadow root',
+          any('Knowledge' in f for f in shadow['faces']), str(shadow['faces']))
+
+
 def test_unit_contract_stub_ready(page):
     # The <chart-animator> stub IS the integration contract in executable form
     # (docs/integration-contract.md). Ben's side builds against these events, so
@@ -1941,6 +1997,7 @@ def main():
             test_background_rect_detection,
             test_unit_embed_fonts_partial,
             test_unit_ensure_fonts_loaded,
+            test_unit_fonts_survive_shadow_root,
             test_unit_contract_stub_ready,
             test_unit_contract_stub_errors_and_export,
         ):
