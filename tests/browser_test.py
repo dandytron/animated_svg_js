@@ -1069,6 +1069,108 @@ def test_unit_embed_fonts_partial(page):
           r['faceCount'] == 1 and r['has300'] and not r['has700'], str(r))
 
 
+def test_unit_contract_stub_ready(page):
+    # The <chart-animator> stub IS the integration contract in executable form
+    # (docs/integration-contract.md). Ben's side builds against these events, so
+    # a change here is a breaking change to someone else's code.
+    #
+    # The load-bearing assertion is the third one: chartType is ADVISORY. It
+    # explains a detection miss; it must never gate. If an absent or unknown type
+    # ever starts reporting supported=false, charts the tool can animate would be
+    # refused, and the refusal would be invisible.
+    page.goto(f'{BASE}/integration-demo.html')
+    r = page.evaluate("""
+      async () => {
+        const el = document.createElement('chart-animator');
+        document.body.appendChild(el);
+        const seen = [];
+        el.addEventListener('ready', e => seen.push(e.detail));
+        const tick = () => new Promise(r => setTimeout(r, 0));
+        const good = await (await fetch('examples/multi_line_graph.svg')).text();
+
+        el.chartType = 'd3-lines'; el.svg = good; await tick();
+        const supported = seen.at(-1);
+        el.chartType = 'd3-pies';  el.svg = good; await tick();
+        const unsupported = seen.at(-1);
+        el.chartType = '';         el.svg = good; await tick();
+        const untyped = seen.at(-1);
+        el.chartType = 'd3-not-a-real-type'; el.svg = good; await tick();
+        const unknown = seen.at(-1);
+        return { supported, unsupported, untyped, unknown };
+      }
+    """)
+    check('contract: supported type -> ready{supported:true}',
+          r['supported']['supported'] is True, str(r['supported']))
+    check('contract: unsupported type -> ready{supported:false} with a human message '
+          '(names the chart kind, not the API id)',
+          r['unsupported']['supported'] is False
+          and 'pie chart' in r['unsupported']['message']
+          and 'd3-pies' not in r['unsupported']['message'], str(r['unsupported']))
+    check('contract: absent chartType stays supported — advisory, never a gate',
+          r['untyped']['supported'] is True, str(r['untyped']))
+    check('contract: UNKNOWN chartType stays supported — a stale map must not '
+          'refuse a chart the tool can animate',
+          r['unknown']['supported'] is True, str(r['unknown']))
+
+
+def test_unit_contract_stub_errors_and_export(page):
+    # Error codes and the export payload are the other half of the contract.
+    # `composed: true` matters more than it looks: without it the events never
+    # cross the shadow boundary and the host silently receives nothing.
+    page.goto(f'{BASE}/integration-demo.html')
+    r = page.evaluate("""
+      async () => {
+        const el = document.createElement('chart-animator');
+        document.body.appendChild(el);
+        const errs = [], exps = [], cancels = [];
+        el.addEventListener('error',    e => errs.push(e.detail));
+        el.addEventListener('exported', e => exps.push(e.detail));
+        el.addEventListener('cancel',   () => cancels.push(1));
+        const tick = () => new Promise(r => setTimeout(r, 0));
+
+        el.chartType = 'd3-lines';
+        el.svg = '<svg><this is not xml'; await tick();
+        const bad = errs.at(-1);
+        el.svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'; await tick();
+        const nodim = errs.at(-1);
+
+        const good = await (await fetch('examples/multi_line_graph.svg')).text();
+        el.chartId = 'demo1'; el.svg = good; await tick();
+
+        const btns = [...el.shadowRoot.querySelectorAll('button')];
+        btns.find(b => /Export/.test(b.textContent)).click(); await tick();
+        btns.find(b => /Back/.test(b.textContent)).click();   await tick();
+        const exp = exps.at(-1);
+
+        // Must escape the shadow root to reach a host listener on document.
+        let bubbled = false;
+        document.addEventListener('ready', () => { bubbled = true; }, { once: true });
+        el.svg = good; await tick();
+
+        return {
+          bad, nodim, cancels: cancels.length, bubbled,
+          shadow: !!el.shadowRoot,
+          exp: { format: exp.format, filename: exp.filename,
+                 isBlob: exp.blob instanceof Blob, size: exp.blob.size },
+        };
+      }
+    """)
+    check('contract: unparseable svg -> error{code:"bad-svg"}',
+          r['bad']['code'] == 'bad-svg', str(r['bad']))
+    check('contract: missing width/height -> error{code:"no-dimensions"} '
+          '(Datawrapper omits viewBox, so dimensions are load-bearing — ADR 0004)',
+          r['nodim']['code'] == 'no-dimensions', str(r['nodim']))
+    check('contract: export emits a real Blob + filename, so a host download flow '
+          'can be built against the stub rather than mocked',
+          r['exp']['isBlob'] and r['exp']['size'] > 0
+          and r['exp']['filename'] == 'demo1-animated.svg', str(r['exp']))
+    check('contract: back button emits cancel', r['cancels'] == 1, str(r))
+    check('contract: renders into a shadow root (host global CSS cannot reach in)',
+          r['shadow'] is True, str(r))
+    check('contract: events are composed — they cross the shadow boundary to the host',
+          r['bubbled'] is True, str(r))
+
+
 def test_unit_trace_preview(page):
     # §1 / ADR 0008 #1: injectTrace draws a stroked line via stroke-dashoffset.
     r = page.evaluate("""
@@ -1634,6 +1736,8 @@ def main():
             test_background_rect_detection,
             test_unit_embed_fonts_partial,
             test_unit_ensure_fonts_loaded,
+            test_unit_contract_stub_ready,
+            test_unit_contract_stub_errors_and_export,
         ):
             print(f'\n── {test.__name__} ──')
             try:
